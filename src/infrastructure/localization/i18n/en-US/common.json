@@ -1,0 +1,9 @@
+{
+  "app.name": "Content Manager",
+  "user.create": "Create user",
+  "user.greeting": "Hello, {name}",
+  "items.count": {
+    "one": "{count} item",
+    "other": "{count} items"
+  }
+}

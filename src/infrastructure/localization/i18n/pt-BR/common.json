@@ -1,0 +1,10 @@
+{
+  "app.name": "Gerenciador de Conteúdo",
+  "app.systemOnly": "Disponível",
+  "user.create": "Criar usuário",
+  "user.greeting": "Olá, {name}",
+  "items.count": {
+    "one": "{count} item",
+    "other": "{count} itens"
+  }
+}

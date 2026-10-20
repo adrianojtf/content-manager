@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CreatorDesk — Gestão de comentários</title>
+<style>
+:root{
+  --bg:#f5f7fb;--surface:#fff;--surface-2:#f8fafc;--border:#e3e8f0;
+  --text:#172338;--muted:#68768b;--navy:#172b4d;--blue:#315fe8;
+  --blue-soft:#edf2ff;--green:#16835f;--green-soft:#e9f8f1;
+  --amber:#a76512;--amber-soft:#fff5df;--red:#b64040;--red-soft:#fff0f0;
+  --shadow:0 4px 18px rgba(20,39,70,.045);--radius:14px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+button,input,textarea,select{font:inherit}
+button{cursor:pointer}
+.app{min-height:100vh;display:grid;grid-template-columns:238px minmax(0,1fr)}
+.sidebar{background:#fff;border-right:1px solid var(--border);padding:25px 16px;display:flex;flex-direction:column;gap:28px}
+.brand{display:flex;align-items:center;gap:10px;padding:0 10px;font-weight:800;font-size:17px;letter-spacing:-.4px}
+.brand-mark{width:34px;height:34px;border-radius:10px;background:var(--navy);color:white;display:grid;place-items:center;font-size:16px}
+.brand small{display:block;color:var(--muted);font-size:10px;letter-spacing:1.2px;font-weight:700;text-transform:uppercase;margin-top:1px}
+.workspace{margin:0 6px;padding:12px;border:1px solid var(--border);border-radius:12px;display:flex;gap:10px;align-items:center}
+.avatar{width:34px;height:34px;border-radius:10px;background:#e9edfb;color:#334c91;display:grid;place-items:center;font-weight:800;flex-shrink:0}
+.workspace strong{display:block;font-size:12px}.workspace span{color:var(--muted);font-size:11px}
+.nav-label{padding:0 12px;margin:0 0 8px;color:#8a96a8;font-size:10px;font-weight:800;letter-spacing:1.25px;text-transform:uppercase}
+.nav{display:grid;gap:4px}
+.nav a{color:#647187;text-decoration:none;display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:9px;font-weight:600}
+.nav a.active{background:var(--blue-soft);color:var(--blue)}
+.nav a .ico{width:18px;text-align:center;font-size:16px}
+.nav .count{margin-left:auto;font-size:11px;background:#e8edf5;padding:2px 7px;border-radius:20px;color:#526179}
+.sidebar-bottom{margin-top:auto;border-top:1px solid var(--border);padding:18px 10px 0;color:var(--muted);font-size:11px}
+.main{min-width:0}
+.topbar{height:70px;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 34px;gap:20px}
+.breadcrumb{font-size:12px;color:var(--muted)}.breadcrumb b{color:var(--text);font-weight:700}
+.top-actions{display:flex;align-items:center;gap:12px}.top-avatar{width:34px;height:34px;border-radius:50%;background:#dce7f7;color:#244775;display:grid;place-items:center;font-weight:800}
+.plan{font-size:11px;color:#5b6680;background:#f1f4f9;border:1px solid var(--border);padding:6px 9px;border-radius:7px}
+.content{max-width:1500px;margin:auto;padding:30px 34px 48px}
+.page-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;margin-bottom:24px}
+.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:1.25px;font-weight:800;color:var(--blue);margin-bottom:6px}
+h1{font-size:27px;letter-spacing:-.8px;margin:0 0 7px;color:var(--navy)}
+.subtitle{color:var(--muted);margin:0;font-size:13px}
+.button{border:1px solid var(--border);background:#fff;color:#34425a;border-radius:9px;padding:9px 12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:8px;transition:.15s}
+.button:hover{border-color:#b9c7df;background:#f9fbff}
+.button.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.button.primary:hover{background:#244fd0}
+.button.small{padding:7px 10px;font-size:12px;border-radius:8px}
+.button.ghost{border-color:transparent;background:transparent;color:var(--muted)}
+.button:disabled{opacity:.45;cursor:not-allowed}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:24px}
+.stat{background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px 18px;box-shadow:var(--shadow)}
+.stat-head{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:12px;font-weight:600}
+.stat-icon{width:30px;height:30px;border-radius:9px;background:#f0f4fa;display:grid;place-items:center;font-size:15px}
+.stat-value{font-size:25px;font-weight:800;letter-spacing:-.6px;margin:9px 0 3px;color:var(--navy)}
+.stat-foot{font-size:11px;color:var(--muted)}.stat-foot .good{color:var(--green);font-weight:700}
+.panel{background:#fff;border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+.social-tabs{display:flex;align-items:center;gap:5px;padding:13px 18px 0;border-bottom:1px solid var(--border);overflow-x:auto}
+.social-tab{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--muted);padding:13px 15px 14px;display:flex;align-items:center;gap:9px;white-space:nowrap;font-weight:700}
+.social-tab.active{border-bottom-color:var(--blue);color:var(--blue)}
+.social-logo{width:23px;height:23px;border-radius:7px;display:grid;place-items:center;font-size:12px;font-weight:800;color:white}
+.ig{background:linear-gradient(135deg,#7748d8,#d8478b,#f1a33b)}.fb{background:#1877f2}.tt{background:#171717}.yt{background:#e62117}
+.tab-count{font-size:10px;border-radius:12px;background:#edf1f7;color:#69768a;padding:2px 6px}
+.toolbar{display:flex;align-items:center;justify-content:space-between;padding:18px 20px;gap:14px;border-bottom:1px solid var(--border)}
+.toolbar-left{display:flex;align-items:center;gap:12px;min-width:0}
+.toolbar h2{font-size:15px;margin:0 0 2px;color:var(--navy)}.toolbar p{font-size:11px;color:var(--muted);margin:0}
+.search{position:relative}.search input{width:220px;padding:9px 12px 9px 34px;border:1px solid var(--border);border-radius:9px;outline:none;background:#fff}
+.search input:focus,.reply-box:focus{border-color:#8ea9ff;box-shadow:0 0 0 3px #edf2ff}
+.search span{position:absolute;left:11px;top:8px;color:#8996a9}
+.toolbar-right{display:flex;align-items:center;gap:8px}
+.filter-select{border:1px solid var(--border);background:white;color:#536078;padding:9px 10px;border-radius:9px}
+.tone-panel{display:grid;grid-template-columns:minmax(150px,.7fr) minmax(220px,1fr) minmax(220px,1fr) auto;align-items:end;gap:14px;padding:16px 20px;border-bottom:1px solid var(--border);background:#fbfcff}
+.tone-panel[hidden]{display:none}
+.tone-field{display:grid;gap:6px;min-width:0}
+.tone-fieldset{border:0;padding:0;margin:0}
+.tone-field label,.tone-field legend{font-size:11px;font-weight:800;color:#3c4a60}
+.tone-field select,.tone-field textarea{width:100%;border:1px solid var(--border);border-radius:8px;padding:9px 10px;background:#fff;color:var(--text)}
+.tone-field textarea{min-height:38px;max-height:90px;resize:vertical}
+.tone-modifiers{display:flex;gap:9px;flex-wrap:wrap;border:0;padding:0;margin:0}
+.tone-modifiers label{display:flex;align-items:center;gap:5px;font-size:11px;color:#536078;font-weight:600}
+.tone-footer{display:grid;justify-items:start;gap:4px}
+.tone-help,.tone-status{font-size:10px;color:var(--muted)}
+.tone-status{min-height:14px}
+.content-list{padding:16px;display:grid;gap:14px}
+.video-card{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#fff}
+.video-card .content-body{display:none}
+.video-card.expanded .content-body{display:block}
+.video-head{display:flex;align-items:center;gap:15px;padding:15px 17px;background:#fff}
+.cover{width:78px;height:96px;border-radius:8px;object-fit:cover;background:#e8edf4;flex-shrink:0}
+.video-info{min-width:0;flex:1}
+.video-title{font-size:14px;font-weight:800;color:var(--navy);margin:0 0 5px}
+.video-desc{font-size:12px;color:var(--muted);margin:0 0 9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:700px}
+.video-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--muted)}
+.meta-dot{display:inline-flex;align-items:center;gap:5px}
+.video-actions{display:flex;align-items:center;gap:8px}
+.sync-label{font-size:11px;color:var(--muted);white-space:nowrap}
+.comment-summary{display:flex;align-items:center;justify-content:space-between;padding:10px 17px;background:#f9fbfe;border-top:1px solid var(--border);gap:12px}
+.summary-left{font-size:12px;font-weight:700;color:#45536b;display:flex;align-items:center;gap:9px}
+.pill{font-size:10px;font-weight:800;padding:4px 7px;border-radius:6px;white-space:nowrap}
+.pill.pending{color:var(--amber);background:var(--amber-soft)}.pill.done{color:var(--green);background:var(--green-soft)}
+.pill.neutral{color:#617089;background:#edf1f7}.pill.ai{color:#4c53b7;background:#f0efff}
+.comment-list{display:grid}
+.comment{border-top:1px solid #edf0f5;padding:14px 17px 15px}
+.comment:first-child{border-top:0}
+.comment-main{display:flex;align-items:flex-start;gap:11px}
+.comment-avatar{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;flex-shrink:0;background:#e8eef9;color:#3a5789;font-size:11px;font-weight:800}
+.comment-body{min-width:0;flex:1}
+.comment-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+.comment-author{font-weight:800;font-size:12px;color:#293850}.comment-time{font-size:10px;color:#8a96a8}
+.comment-text{margin:0;color:#46546a;font-size:12px;line-height:1.55}
+.comment-controls{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:9px}
+.status{font-size:10px;display:inline-flex;align-items:center;gap:5px;color:var(--muted)}
+.status .dot{width:6px;height:6px;border-radius:50%;background:#d9a13c}
+.status.replied{color:var(--green)}.status.replied .dot{background:var(--green)}
+.expand-button{border:0;background:transparent;color:var(--blue);font-size:11px;font-weight:800;padding:3px 0;margin-left:auto}
+.comment-detail{display:none;margin:14px 0 0 43px;padding:14px;background:#f8faff;border:1px solid #e6ebf6;border-radius:10px}
+.comment.expanded .comment-detail{display:block}
+.detail-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+.detail-title{font-size:11px;font-weight:800;color:#3b4961}
+.eval-result{display:none;background:#fff;border:1px solid #dfe6f3;border-radius:9px;padding:12px;margin-bottom:12px}
+.eval-result.show{display:block}
+.analysis-section-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}
+.analysis-section-head strong{font-size:11px;color:#34425a}
+.analysis-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:7px}
+.eval-metric{background:#f6f8fc;border-radius:7px;padding:8px;min-width:0}
+.eval-metric span{display:block;color:var(--muted);font-size:10px;margin-bottom:3px}.eval-metric strong{font-size:12px;color:var(--navy);overflow-wrap:anywhere}
+.analysis-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.analysis-meta .pill{font-size:9px}
+.eval-note{font-size:11px;color:#59677d;margin:8px 0 0;line-height:1.5}
+.analysis-summary{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.analysis-chip{padding:4px 6px;border-radius:6px;background:#f0f3f8;color:#58667b;font-size:9px;line-height:1.35}
+.analysis-chip strong{color:#34425a}
+.severity-note{display:flex;justify-content:space-between;gap:10px;margin-top:8px;padding:7px 9px;border-radius:7px;background:#fff8e9;color:#77521b;font-size:10px}
+
+.reply-label{display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:800;color:#3c4a60;margin-bottom:7px}
+.reply-box{width:100%;min-height:78px;resize:vertical;padding:10px 11px;border:1px solid var(--border);border-radius:8px;background:#fff;outline:none;font-size:12px;color:#34425a;line-height:1.5}
+.reply-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:9px}
+.reply-actions .spacer{flex:1}
+.response-review{display:none;margin-top:12px;padding:10px 12px;border-radius:9px;background:#fff8e9;border:1px solid #f4dfae;color:#77521b;font-size:11px}
+.response-review.show{display:block}
+.log{display:none;margin-top:12px;padding-top:10px;border-top:1px dashed #dce3ef}
+.log.show{display:block}.log-title{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:#758198;margin-bottom:6px}
+.log-entry{font-size:10px;color:#68768b;margin:3px 0}
+.empty{padding:45px 20px;text-align:center;color:var(--muted)}
+.toast{position:fixed;right:24px;bottom:24px;background:#172b4d;color:#fff;padding:13px 16px;border-radius:10px;box-shadow:0 12px 32px #172b4d33;z-index:20;opacity:0;transform:translateY(8px);pointer-events:none;transition:.2s;font-size:12px}
+.toast.show{opacity:1;transform:translateY(0)}
+.footer-note{font-size:11px;color:#8792a4;text-align:center;padding:18px 0 0}
+@media(max-width:1100px){.app{grid-template-columns:72px minmax(0,1fr)}.sidebar{padding:22px 10px}.brand{padding:0 8px}.brand-text,.workspace>div:last-child,.nav-label,.nav a .nav-text,.nav .count,.sidebar-bottom{display:none}.workspace{justify-content:center;padding:8px 0;margin:0}.nav a{justify-content:center;padding:12px 8px}.nav a .ico{font-size:18px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.content{padding:24px 20px}}
+@media(max-width:720px){.app{display:block}.sidebar{display:none}.topbar{height:58px;padding:0 16px}.content{padding:20px 12px 35px}.page-heading{display:block}.page-heading>.button{margin-top:15px}.stats{gap:8px}.stat{padding:12px}.stat-value{font-size:22px}.toolbar{align-items:flex-start;flex-direction:column;padding:15px}.toolbar-right{width:100%;flex-wrap:wrap}.search{flex:1}.search input{width:100%}.content-list{padding:9px}.video-head{padding:12px;gap:10px;align-items:flex-start}.cover{width:63px;height:82px}.video-title{font-size:12px}.video-desc{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}.video-actions{flex-direction:column;align-items:flex-end}.sync-label{display:none}.comment-summary{padding:10px 12px}.comment{padding:12px}.comment-detail{margin-left:0}.eval-grid{grid-template-columns:1fr}.plan{display:none}.social-tabs{padding-left:7px}.social-tab{padding:12px 10px;font-size:12px}.video-meta{gap:7px}.hide-mobile{display:none}}
+@media(max-width:1000px){.tone-panel{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.tone-panel{grid-template-columns:1fr;padding:14px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-mark">C</div><div class="brand-text">CreatorDesk<small>Creator studio</small></div></div>
+    <div class="workspace"><div class="avatar">MC</div><div><strong>Marina Costa</strong><span>Espaço do criador</span></div></div>
+    <div><div class="nav-label">Workspace</div><nav class="nav">
+      <a href="#" onclick="return false"><span class="ico">▦</span><span class="nav-text">Visão geral</span></a>
+      <a href="#" onclick="return false"><span class="ico">▣</span><span class="nav-text">Conteúdos</span></a>
+      <a href="#" class="active" onclick="return false"><span class="ico">☷</span><span class="nav-text">Comentários</span><span class="count">24</span></a>
+      <a href="#" onclick="return false"><span class="ico">◷</span><span class="nav-text">Agendamentos</span></a>
+      <a href="#" onclick="return false"><span class="ico">◈</span><span class="nav-text">Análises</span></a>
+    </nav></div>
+    <div><div class="nav-label">Preferências</div><nav class="nav">
+      <a href="#" onclick="return false"><span class="ico">◎</span><span class="nav-text">Redes conectadas</span></a>
+      <a href="#" onclick="return false"><span class="ico">⚙</span><span class="nav-text">Configurações</span></a>
+    </nav></div>
+    <div class="sidebar-bottom">CreatorDesk MVP · Protótipo navegável<br>Dados ilustrativos, sem conexão com redes sociais.</div>
+  </aside>
+  <main class="main">
+    <header class="topbar">
+      <div class="breadcrumb">Workspace <span style="padding:0 7px;color:#b1bac8">/</span> <b>Gestão de comentários</b></div>
+      <div class="top-actions"><span class="plan">PLANO CREATOR</span><div class="top-avatar">MC</div></div>
+    </header>
+    <div class="content">
+      <div class="page-heading">
+        <div><div class="eyebrow">Community management</div><h1>Gestão de comentários</h1><p class="subtitle">Centralize conversas, avalie o contexto com IA e responda sem sair do seu fluxo de trabalho.</p></div>
+        <button class="button" onclick="showToast('A sincronização global está desativada no MVP. Sincronize por rede social ou conteúdo.')"><span style="font-size:16px">↻</span> Sincronização global <span style="font-size:10px;color:#8a96a8">Indisponível</span></button>
+      </div>
+      <section class="stats">
+        <div class="stat"><div class="stat-head">Comentários sincronizados <span class="stat-icon">☷</span></div><div class="stat-value" id="totalComments">248</div><div class="stat-foot">Em todas as redes conectadas</div></div>
+        <div class="stat"><div class="stat-head">Pendentes de resposta <span class="stat-icon">◷</span></div><div class="stat-value" id="pendingComments">24</div><div class="stat-foot"><span class="good">Priorize</span> conversas sem resposta</div></div>
+        <div class="stat"><div class="stat-head">Avaliações pendentes <span class="stat-icon">✳</span></div><div class="stat-value" id="pendingEvaluations">17</div><div class="stat-foot">Análise individual com JEV</div></div>
+        <div class="stat"><div class="stat-head">Respostas enviadas hoje <span class="stat-icon">↗</span></div><div class="stat-value" id="sentToday">12</div><div class="stat-foot">Envio individual por comentário</div></div>
+      </section>
+      <section class="panel">
+        <div class="social-tabs" role="tablist" aria-label="Redes sociais">
+          <button class="social-tab active" data-network="instagram" role="tab"><span class="social-logo ig">◎</span>Instagram <span class="tab-count">8</span></button>
+          <button class="social-tab" data-network="facebook" role="tab"><span class="social-logo fb">f</span>Facebook <span class="tab-count">6</span></button>
+          <button class="social-tab" data-network="tiktok" role="tab"><span class="social-logo tt">♪</span>TikTok <span class="tab-count">5</span></button>
+          <button class="social-tab" data-network="youtube" role="tab"><span class="social-logo yt">▶</span>YouTube <span class="tab-count">5</span></button>
+        </div>
+        <div class="toolbar">
+          <div class="toolbar-left"><div><h2 id="networkTitle">Instagram</h2><p id="networkSubtitle">8 conteúdos · última sincronização há 18 min</p></div></div>
+          <div class="toolbar-right">
+            <div class="search"><span>⌕</span><input id="searchInput" type="search" placeholder="Buscar conteúdo ou comentário…" aria-label="Buscar conteúdo ou comentário"></div>
+            <select class="filter-select" id="statusFilter" aria-label="Filtrar comentários"><option value="all">Todos os comentários</option><option value="pending">Sem resposta</option><option value="replied">Respondidos</option><option value="unevaluated">Sem avaliação JEV</option></select>
+            <button class="button small" id="toneSettingsToggle" aria-expanded="false" aria-controls="toneSettings">Tom da resposta</button>
+            <button class="button primary small" id="syncNetwork"><span style="font-size:16px">↻</span> Sincronizar rede</button>
+          </div>
+        </div>
+        <div class="tone-panel" id="toneSettings" hidden>
+          <div class="tone-field"><label for="tonePrimary">Tom principal</label><select id="tonePrimary"><option value="FRIENDLY">Acolhedor</option><option value="PROFESSIONAL">Profissional</option><option value="CASUAL">Casual</option><option value="EMPATHETIC">Empático</option></select></div>
+          <fieldset class="tone-field tone-fieldset"><legend>Complementos (até 2)</legend><div class="tone-modifiers"><label><input type="checkbox" data-tone-modifier="CONCISE"> Conciso</label><label><input type="checkbox" data-tone-modifier="WARM"> Caloroso</label><label><input type="checkbox" data-tone-modifier="ENTHUSIASTIC"> Entusiasmado</label></div></fieldset>
+          <div class="tone-field"><label for="toneNote">Orientação adicional <span id="toneNoteCount">0/500</span></label><textarea id="toneNote" maxlength="500" placeholder="Ex.: evite gírias e não prometa datas não confirmadas."></textarea></div>
+          <div class="tone-footer"><button class="button small primary" id="saveToneProfile">Salvar perfil</button><span class="tone-status" id="toneProfileStatus" aria-live="polite">Perfil padrão: Acolhedor.</span><span class="tone-help">Preferência desta conta; vale para sugestões futuras.</span></div>
+        </div>
+        <div class="content-list" id="contentList"></div>
+      </section>
+      <div class="footer-note">Protótipo funcional com dados fictícios · Botões simulam o fluxo de trabalho, sem chamadas reais às APIs.</div>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+const networkInfo={
+ instagram:{name:"Instagram",sub:"Instagram Reels e publicações",last:"há 18 min",cls:"ig",symbol:"◎"},
+ facebook:{name:"Facebook",sub:"Publicações da Página",last:"há 42 min",cls:"fb",symbol:"f"},
+ tiktok:{name:"TikTok",sub:"Vídeos publicados",last:"há 1 h",cls:"tt",symbol:"♪"},
+ youtube:{name:"YouTube",sub:"Vídeos do canal",last:"há 26 min",cls:"yt",symbol:"▶"}
+};
+const data={
+ instagram:[
+  {id:"ig1",title:"Ela descobriu o segredo do marido",desc:"Parte 4 — A verdade finalmente veio à tona. O que você faria?",date:"Hoje, 10:42",views:"18,2 mil",cover:"https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&w=240&q=80",comments:[
+   {id:"c1",author:"juliana.moraes",initials:"JM",time:"há 4 min",text:"Eu sabia que ele estava escondendo alguma coisa! Preciso da parte 5 agora.",replied:false,evaluation:null},
+   {id:"c2",author:"paula_silva",initials:"PS",time:"há 18 min",text:"A história está muito boa, mas esse final me deixou nervosa kkkk",replied:true,response:"A parte 5 vem aí! Prepare o coração porque tem mais reviravolta.",evaluation:{sentiment:"Positivo",intent:"Engajamento",severity:"Baixa",note:"Comentário entusiasmado e bem-humorado. Uma resposta leve e convidativa é adequada."},responseEvaluation:null},
+   {id:"c3",author:"marcos.ribeiro",initials:"MR",time:"há 31 min",text:"A legenda não combina com o que acontece no vídeo. Fiquei confuso.",replied:false,evaluation:null}
+  ]},
+  {id:"ig2",title:"O reencontro que mudou tudo",desc:"Depois de 10 anos, eles se encontraram no lugar menos esperado.",date:"Ontem, 19:15",views:"32,7 mil",cover:"https://images.unsplash.com/photo-1516589178581-6cd7833ae3b2?auto=format&fit=crop&w=240&q=80",comments:[
+   {id:"c4",author:"bia.ferreira",initials:"BF",time:"há 1 h",text:"Chorei com essa cena. Vocês conseguem fazer a gente sentir tudo!",replied:true,response:"Que bom que a cena te emocionou! Obrigada por acompanhar a história.",evaluation:{sentiment:"Positivo",intent:"Elogio",severity:"Baixa",note:"Elogio direto. Agradecer de forma genuína reforça o vínculo com a audiência."},responseEvaluation:{recommend:true,note:"Resposta alinhada ao tom emocional e acolhedor do comentário."}},
+   {id:"c5",author:"leo.costa",initials:"LC",time:"há 2 h",text:"Isso não faz sentido com o episódio anterior.",replied:false,evaluation:{sentiment:"Negativo",intent:"Crítica à continuidade",severity:"Média",note:"A pessoa aponta uma possível inconsistência narrativa. Reconheça a observação sem entrar em confronto e peça mais detalhes se necessário."}}
+  ]},
+  {id:"ig3",title:"A promessa que ela não deveria fazer",desc:"Um acordo, duas famílias e um segredo impossível de esconder.",date:"12 out, 16:30",views:"9,4 mil",cover:"https://images.unsplash.com/photo-1488426862026-3ee34a7d66df?auto=format&fit=crop&w=240&q=80",comments:[
+   {id:"c6",author:"carol.nunes",initials:"CN",time:"há 3 h",text:"Onde eu vejo os episódios anteriores?",replied:false,evaluation:null},
+   {id:"c7",author:"rafael_lima",initials:"RL",time:"há 5 h",text:"Conteúdo incrível, já compartilhei com meus amigos.",replied:true,response:"Valeu por compartilhar! Isso ajuda muito o projeto.",evaluation:null,responseEvaluation:null}
+  ]}
+ ],
+ facebook:[
+  {id:"fb1",title:"A verdade veio à tona",desc:"Você perdoaria uma traição assim? Assista até o final.",date:"Hoje, 09:20",views:"7,8 mil",cover:"https://images.unsplash.com/photo-1522673607200-164d1b6ce486?auto=format&fit=crop&w=240&q=80",comments:[
+   {id:"fbc1",author:"Renata Alves",initials:"RA",time:"há 12 min",text:"Jamais perdoaria. Falta de respeito não tem desculpa.",replied:false,evaluation:null},
+   {id:"fbc2",author:"Carlos Mendes",initials:"CM",time:"há 28 min",text:"Cadê a continuação dessa novela?",replied:true,response:"Estamos preparando a continuação. Acompanhe a página para não perder!",evaluation:{sentiment:"Neutro",intent:"Solicitação de conteúdo",severity:"Baixa",note:"Pergunta sobre continuidade. Informar o próximo passo sem prometer data não confirmada."},responseEvaluation:null}
+  ]},
+  {id:"fb2",title:"Uma decisão que separou a família",desc:"Às vezes, escolher a verdade custa mais caro do que mentir.",date:"Ontem, 17:05",views:"12,1 mil",cover:"https://images.unsplash.com/photo-1511895426328-dc8714191300?auto=format&fit=crop&w=240&q=80",comments:[
+   {id:"fbc3",author:"Marta Souza",initials:"MS",time:"há 40 min",text:"A edição está muito rápida, não consegui ler as falas.",replied:false,evaluation:{sentiment:"Negativo",intent:"Feedback de acessibilidade",severity:"Média",note:"Crítica prática sobre legibilidade. Responder agradecendo e registrar o feedback para a produção."}},
+   {id:"fbc4",author:"João Pedro",initials:"JP",time:"há 1 h",text:"Muito bom!",replied:true,response:"Obrigado por assistir e comentar!",evaluation:null}
+  ]}
+ ],
+ tiktok:[
+  {id:"tt1",title:"A mensagem apareceu no pior momento",desc:"POV: quando a pessoa errada vê a conversa.",date:"Hoje, 11:03",views:"54,3 mil",cover:"https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=240&q=80",comments:[
+   {id:"ttc1",author:"@nathy.mp",initials:"NM",time:"há 2 min",text:"PARTE 2 PELO AMOR DE DEUS 😭",replied:false,evaluation:null},
+   {id:"ttc2",author:"@gui.oliveira",initials:"GO",time:"há 15 min",text:"A atuação ficou muito natural, achei que era real.",replied:false,evaluation:{sentiment:"Positivo",intent:"Elogio",severity:"Baixa",note:"O comentário elogia a atuação e demonstra surpresa. Agradeça sem afirmar que o conteúdo é real."}},
+   {id:"ttc3",author:"@luhzinha",initials:"LZ",time:"há 37 min",text:"A voz da personagem mudou no meio do vídeo.",replied:true,response:"Obrigado por avisar! Vamos revisar a consistência de áudio nos próximos vídeos.",evaluation:{sentiment:"Neutro",intent:"Crítica técnica",severity:"Baixa",note:"Feedback objetivo de produção. Uma resposta curta que reconheça a observação é adequada."},responseEvaluation:null}
+  ]},
+  {id:"tt2",title:"A nova vizinha sabe demais",desc:"Tem gente que chega trazendo respostas… e mais perguntas.",date:"Ontem, 20:12",views:"21,6 mil",cover:"https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=240&q=80",comments:[
+   {id:"ttc4",author:"@duda.r",initials:"DR",time:"há 50 min",text:"Eu desconfiava dela desde o primeiro segundo.",replied:true,response:"Você está prestando atenção em tudo! Será que acertou?",evaluation:null,responseEvaluation:null},
+   {id:"ttc5",author:"@felipe_s",initials:"FS",time:"há 1 h",text:"Isso é feito com inteligência artificial?",replied:false,evaluation:{sentiment:"Neutro",intent:"Interação",severity:"Baixa",note:"Pergunta direta e sem sinal de conflito. Responda com informações confirmadas sobre o processo de criação."}}
+  ]}
+ ],
+ youtube:[
+  {id:"yt1",title:"Novela IA: O contrato secreto — Episódio 03",desc:"A assinatura muda o destino de todos. Episódio completo da série.",date:"Hoje, 08:00",views:"4,2 mil",cover:"https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&w=240&q=80",comments:[
+   {id:"ytc1",author:"Ana Clara",initials:"AC",time:"há 9 min",text:"A história está ficando cada vez melhor. Parabéns pela criatividade!",replied:false,evaluation:null},
+   {id:"ytc2",author:"Pedro Henrique",initials:"PH",time:"há 35 min",text:"O áudio está baixo em algumas partes.",replied:true,response:"Obrigado pelo aviso! Vamos conferir os níveis de áudio no próximo episódio.",evaluation:{sentiment:"Neutro",intent:"Feedback técnico",severity:"Média",note:"Problema técnico específico. Agradeça e reconheça a necessidade de revisão."},responseEvaluation:{recommend:true,note:"A resposta reconhece o problema e indica uma ação sem fazer uma promessa excessiva."}}
+  ]},
+  {id:"yt2",title:"Como tudo começou: os primeiros sinais",desc:"Relembre os detalhes que anteciparam a grande revelação.",date:"10 out, 14:45",views:"8,9 mil",cover:"https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=240&q=80",comments:[
+   {id:"ytc3",author:"Lívia Martins",initials:"LM",time:"há 2 h",text:"Vim pelo episódio novo e agora vou assistir tudo desde o começo.",replied:false,evaluation:null},
+   {id:"ytc4",author:"Bruno A.",initials:"BA",time:"há 4 h",text:"A thumbnail podia ter o número do episódio.",replied:true,response:"Boa sugestão! Vamos considerar essa melhoria nas próximas capas.",evaluation:null,responseEvaluation:null}
+  ]}
+ ]
+};
+let activeNetwork="instagram";let toastTimer;
+const defaultToneProfile={primaryTone:"FRIENDLY",modifiers:[],customNote:""};
+const toneLabels={FRIENDLY:"Acolhedor",PROFESSIONAL:"Profissional",CASUAL:"Casual",EMPATHETIC:"Empático"};
+const allowedToneModifiers=["CONCISE","WARM","ENTHUSIASTIC"];
+function readToneProfile(network){try{const saved=JSON.parse(localStorage.getItem(`creatordesk-tone-profile:${network}`)||"null");if(!saved||!Object.hasOwn(toneLabels,saved.primaryTone))return {...defaultToneProfile};return {primaryTone:saved.primaryTone,modifiers:Array.isArray(saved.modifiers)?saved.modifiers.filter(value=>allowedToneModifiers.includes(value)).slice(0,2):[],customNote:typeof saved.customNote==="string"?saved.customNote.slice(0,500):""}}catch{return {...defaultToneProfile}}}
+function updateToneForm(){const profile=readToneProfile(activeNetwork);document.getElementById("tonePrimary").value=profile.primaryTone;document.querySelectorAll("[data-tone-modifier]").forEach(input=>{input.checked=profile.modifiers.includes(input.dataset.toneModifier)});document.getElementById("toneNote").value=profile.customNote;document.getElementById("toneNoteCount").textContent=`${profile.customNote.length}/500`;document.getElementById("toneSettingsToggle").textContent=`Tom: ${toneLabels[profile.primaryTone]}`;document.getElementById("toneProfileStatus").textContent=`Perfil carregado para ${networkInfo[activeNetwork].name}.`;updateToneModifierAvailability()}
+function updateToneModifierAvailability(){const inputs=[...document.querySelectorAll("[data-tone-modifier]")],selected=inputs.filter(input=>input.checked).length;inputs.forEach(input=>{input.disabled=!input.checked&&selected>=2})}
+function saveToneProfile(){const profile={primaryTone:document.getElementById("tonePrimary").value,modifiers:[...document.querySelectorAll("[data-tone-modifier]:checked")].map(input=>input.dataset.toneModifier).slice(0,2),customNote:document.getElementById("toneNote").value.trim().slice(0,500)};try{localStorage.setItem(`creatordesk-tone-profile:${activeNetwork}`,JSON.stringify(profile));updateToneForm();document.getElementById("toneProfileStatus").textContent="Perfil salvo para esta conta; será usado nas próximas sugestões (simulação).";showToast("Perfil de tom salvo para esta conta.")}catch{document.getElementById("toneProfileStatus").textContent="Não foi possível salvar o perfil neste navegador.";showToast("Não foi possível salvar o perfil de tom.")}}
+const analysisFieldLabels={sentiment:"Sentimento",emotion:"Emoção",intent:"Intenção",topic:"Tópico",entity:"Entidade",spamScore:"Score de spam",toxicityScore:"Score de toxicidade",engagementValue:"Valor de engajamento",confidence:"Confiança",rationale:"Justificativa",provider:"Provedor",model:"Modelo",schemaVersion:"Versão do schema"};
+function createDemoJevOutput(comment,raw){const sentiment=raw.sentiment||"Neutro",intent=raw.intent||"Interação",sentimentUpper=sentiment.toUpperCase();return {sentiment,emotion:raw.emotion||(sentimentUpper==="NEGATIVO"?"FRUSTRATION":sentimentUpper==="POSITIVO"?"JOY":"CURIOSITY"),intent,topic:raw.topic||(/acessibilidade/i.test(intent)?"ACCESSIBILITY":/elogio|engajamento/i.test(intent)?"CONTENT":/técnica|continuidade/i.test(intent)?"CONTENT_QUALITY":"GENERAL"),entity:raw.entity??null,spamScore:raw.spamScore??0.01,toxicityScore:raw.toxicityScore??(sentimentUpper==="NEGATIVO"?0.08:0.01),engagementValue:raw.engagementValue??(sentimentUpper==="POSITIVO"?0.82:sentimentUpper==="NEGATIVO"?0.37:0.58),confidence:raw.confidence??0.91,rationale:raw.rationale??raw.note??"Classificação ilustrativa baseada no texto do comentário.",provider:raw.provider??"JEV",model:raw.model??"jev-comment-evaluator-demo",schemaVersion:raw.schemaVersion??"1",generatedAt:raw.generatedAt??new Date().toISOString(),severity:raw.severity??"Baixa"}}
+function ensureAnalysisState(comment){if(!comment.evaluation||comment.analysisReady)return;comment.evaluation=createDemoJevOutput(comment,comment.evaluation);comment.analysisReady=true}
+function recordDemoJevAnalysis(comment,raw){comment.evaluation=createDemoJevOutput(comment,raw);comment.analysisReady=true}
+function currentAnalysis(comment){if(!comment.evaluation)return null;ensureAnalysisState(comment);return comment.evaluation}
+function formatAnalysisValue(key,value){if(value===null||value===undefined||value==="")return "—";if(["spamScore","toxicityScore","engagementValue","confidence"].includes(key))return Number(value).toFixed(2);return String(value)}
+function renderAnalysisGrid(analysis){return Object.keys(analysisFieldLabels).map(key=>`<div class="eval-metric"><span>${analysisFieldLabels[key]}</span><strong>${escapeHtml(formatAnalysisValue(key,analysis[key]))}</strong></div>`).join("")}
+function formatAnalysisDate(value){const date=new Date(value);return Number.isNaN(date.getTime())?String(value||"Data não informada"):date.toLocaleString("pt-BR")}
+function renderLegacyAnalysis(comment){return renderAnalysis(comment);if(!comment.evaluation)return '<div class="eval-result"></div>';ensureAnalysisState(comment);const original=comment.evaluation,effective=currentAnalysis(comment),formFields=editableAnalysisFields.map(key=>`<label class="correction-field">${analysisFieldLabels[key]}${key.endsWith("Score")||key==="engagementValue"?`<input type="number" min="0" max="1" step="0.01" data-analysis-field="${key}" value="${escapeHtml(formatAnalysisValue(key,effective[key])==="—"?"":effective[key])}">`:`<input type="text" data-analysis-field="${key}" value="${escapeHtml(effective[key]??"")}" placeholder="${key==="entity"?"Deixe vazio para sem entidade":"Informe o valor corrigido"}">`}</label>`).join("");return `<div class="eval-result show"><section class="analysis-section"><div class="analysis-section-head"><strong>Saída original do JEV</strong><span class="pill ai">Imutável</span></div><div class="analysis-grid">${renderAnalysisGrid(original)}</div><div class="severity-note"><span>Severidade (triagem demonstrativa; fora do contrato JEV atual)</span><strong>${escapeHtml(original.severity||"—")}</strong></div><div class="analysis-meta"><span class="pill neutral">Gerado em ${escapeHtml(formatAnalysisDate(original.generatedAt))}</span></div><p class="eval-note"><strong>Justificativa do JEV:</strong> ${escapeHtml(original.rationale||"Sem justificativa fornecida.")}</p></section><section class="analysis-section"><div class="analysis-section-head"><strong>Sua avaliação corrigida</strong><span class="pill ${comment.analysisHistory.some(event=>event.eventType==="COMMENT_ANALYSIS_CORRECTED"&&event.parentEventId===comment.evaluationId)?"done":"neutral"}">${comment.analysisHistory.some(event=>event.eventType==="COMMENT_ANALYSIS_CORRECTED"&&event.parentEventId===comment.evaluationId)?"Com correções":"Igual ao JEV"}</span></div><div class="analysis-grid">${renderAnalysisGrid(effective)}</div><form class="correction-form" id="correction-form-${comment.id}" onsubmit="event.preventDefault();saveAnalysisCorrection('${comment.id}')"><div class="analysis-section-head"><strong>Corrigir classificação e scores</strong><span class="pill neutral">Confiança, justificativa e proveniência são somente leitura</span></div><div class="correction-grid">${formFields}</div><label class="correction-field">Motivo da correção (opcional)<textarea class="correction-reason" data-correction-reason placeholder="Ex.: o contexto indica feedback de acessibilidade, não uma crítica genérica."></textarea></label><div class="correction-actions"><button class="button small primary" type="submit">Salvar correção</button><span class="correction-help">Correções ficam em histórico separado; não alteram a resposta original do JEV.</span></div></form><p class="correction-help">Este protótipo registra feedback para curadoria e possível melhoria futura. Não executa retreinamento automático do JEV.</p></section></div>`}
+function renderAnalysis(comment){if(!comment.evaluation)return '<div class="eval-result"></div>';ensureAnalysisState(comment);const evaluation=currentAnalysis(comment);return `<div class="eval-result show"><div class="analysis-section-head"><strong>Avaliação do comentário</strong><span class="pill ai">Resultado do JEV</span></div><div class="analysis-grid">${renderAnalysisGrid(evaluation)}</div><div class="severity-note"><span>Severidade (triagem demonstrativa; fora do contrato JEV atual)</span><strong>${escapeHtml(evaluation.severity||"—")}</strong></div><div class="analysis-meta"><span class="pill neutral">Gerado em ${escapeHtml(formatAnalysisDate(evaluation.generatedAt))}</span></div><p class="eval-note"><strong>Justificativa:</strong> ${escapeHtml(evaluation.rationale||"Sem justificativa fornecida.")}</p></div>`}
+function renderAnalysisSummary(comment){if(!comment.evaluation)return "";const analysis=currentAnalysis(comment);return `<div class="analysis-summary" aria-label="Resumo da avaliação do JEV">${["sentiment","emotion","intent","topic","entity","spamScore","toxicityScore","engagementValue"].map(key=>`<span class="analysis-chip"><strong>${analysisFieldLabels[key]}:</strong> ${escapeHtml(formatAnalysisValue(key,analysis[key]))}</span>`).join("")}</div>`}
+
+function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function showToast(message){const el=document.getElementById("toast");el.textContent=message;el.classList.add("show");clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove("show"),2900)}
+function allComments(){return Object.values(data).flatMap(v=>v.flatMap(c=>c.comments))}
+function updateStats(){const cs=allComments();document.getElementById("totalComments").textContent=248+Math.max(0,cs.length-24);document.getElementById("pendingComments").textContent=cs.filter(c=>!c.replied).length;document.getElementById("pendingEvaluations").textContent=cs.filter(c=>!c.evaluation).length;document.getElementById("sentToday").textContent=12+cs.filter(c=>c.sent).length}
+function render(){
+ const list=document.getElementById("contentList"),info=networkInfo[activeNetwork];
+ document.getElementById("networkTitle").textContent=info.name;
+ document.getElementById("networkSubtitle").textContent=`${data[activeNetwork].length} conteúdos de exemplo · última sincronização ${info.last}`;
+ document.querySelectorAll(".social-tab").forEach(b=>b.classList.toggle("active",b.dataset.network===activeNetwork));
+ const q=document.getElementById("searchInput").value.trim().toLowerCase(),filter=document.getElementById("statusFilter").value;
+ const cards=data[activeNetwork].map(video=>{
+  const matches=video.title.toLowerCase().includes(q)||video.desc.toLowerCase().includes(q);
+  const comments=video.comments.filter(c=>(!q||matches||c.text.toLowerCase().includes(q)||c.author.toLowerCase().includes(q))&&(filter==="all"||(filter==="pending"&&!c.replied)||(filter==="replied"&&c.replied)||(filter==="unevaluated"&&!c.evaluation)));
+  if(q&&!matches&&!comments.length)return "";
+  if(!comments.length&&filter!=="all")return "";
+  return `<article class="video-card" data-video="${video.id}">
+   <div class="video-head"><img class="cover" src="${escapeHtml(video.cover)}" alt="Capa de ${escapeHtml(video.title)}" onerror="this.style.background='#e7ecf4';this.removeAttribute('src')">
+    <div class="video-info"><h3 class="video-title">${escapeHtml(video.title)}</h3><p class="video-desc">${escapeHtml(video.desc)}</p><div class="video-meta"><span class="meta-dot">◷ ${escapeHtml(video.date)}</span><span class="meta-dot">▷ ${escapeHtml(video.views)} visualizações</span><span class="meta-dot">☷ ${video.comments.length} comentários</span></div></div>
+    <div class="video-actions"><button class="button small ghost content-toggle" onclick="toggleContent('${video.id}')" aria-expanded="false" title="Expandir conteúdo e comentários">Ver comentários⌄</button><button class="button small" onclick="syncContent('${video.id}')" title="Sincronizar comentários deste conteúdo" aria-label="Sincronizar comentários deste conteúdo">↻ <span class="hide-mobile">Sincronizar</span></button></div>
+   </div>
+   <div class="content-body">
+    <div class="comment-summary"><div class="summary-left"><span>☷</span> Comentários <span class="pill neutral">${video.comments.filter(c=>!c.replied).length} sem resposta</span></div><button class="button small ghost" onclick="toggleAllComments('${video.id}')">Expandir comentários⌄</button></div>
+    <div class="comment-list">${comments.map(c=>renderComment(c,video.id)).join("")||'<div class="empty">Nenhum comentário corresponde aos filtros.</div>'}</div>
+   </div>
+  </article>`;
+ }).join("");
+ list.innerHTML=cards||'<div class="empty"><div style="font-size:26px;margin-bottom:8px">⌕</div><strong>Nenhum resultado encontrado</strong><p>Tente ajustar sua busca ou os filtros.</p></div>';
+ updateStats();
+}
+function renderComment(c,videoId){
+ const evalHtml=renderAnalysis(c);
+ const reply=c.response||"";
+ return `<div class="comment" id="comment-${c.id}" data-comment="${c.id}">
+  <div class="comment-main"><div class="comment-avatar">${escapeHtml(c.initials)}</div><div class="comment-body"><div class="comment-top"><span class="comment-author">${escapeHtml(c.author)}</span><span class="comment-time">${escapeHtml(c.time)}</span>${c.evaluation?'<span class="pill ai">JEV avaliado</span>':''}</div><p class="comment-text">${escapeHtml(c.text)}</p>${renderAnalysisSummary(c)}<div class="comment-controls"><span class="status ${c.replied?'replied':''}"><span class="dot"></span>${c.replied?'Respondido':'Sem resposta'}</span>${c.responseEvaluation?`<span class="pill ${c.responseEvaluation.recommend?'done':'pending'}">JEV: ${c.responseEvaluation.recommend?'Recomendado':'Revisar resposta'}</span>`:''}<button class="expand-button" onclick="toggleComment('${c.id}')">Detalhes e resposta⌄</button></div></div></div>
+  <div class="comment-detail">
+   <div class="detail-top"><span class="detail-title">Análise do comentário</span><span class="pill ${c.evaluation?'done':'pending'}">${c.evaluation?'Avaliado':'Avaliação pendente'}</span></div>
+   ${evalHtml}
+   <div class="reply-label"><span>Resposta ao comentário</span><span class="status ${c.replied?'replied':''}"><span class="dot"></span>${c.replied?'Resposta enviada':'Rascunho não enviado'}</span></div>
+   <textarea class="reply-box" id="reply-${c.id}" placeholder="Escreva sua resposta ou gere uma sugestão com IA…">${escapeHtml(reply)}</textarea>
+   <div class="reply-actions"><button class="button small" onclick="evaluateComment('${c.id}')">✳ ${c.evaluation?'Reavaliar com JEV':'Avaliar com JEV'}</button><button class="button small" onclick="generateReply('${c.id}')" ${c.evaluation?'':'disabled title="Avalie o comentário antes de gerar uma sugestão com IA."'}>✧ Gerar resposta</button><span class="spacer"></span><button class="button primary small" onclick="sendReply('${c.id}')">Enviar resposta ↗</button></div>
+   <div class="response-review ${c.responseEvaluation?'show':''}" id="response-review-${c.id}">${c.responseEvaluation?`<strong>${c.responseEvaluation.recommend?'Recomendação: usar':'Recomendação: revisar'}</strong> — ${escapeHtml(c.responseEvaluation.note)}`:''}</div>
+   <div style="margin-top:10px"><button class="button small" onclick="reviewResponse('${c.id}')">◇ Avaliar resposta (opcional)</button><button class="button small ghost" onclick="toggleLog('${c.id}')">Ver logs</button></div>
+   <div class="log ${c.logs&&c.logs.length?'show':''}" id="log-${c.id}"><div class="log-title">Histórico de ações</div>${(c.logs||[]).map(l=>`<div class="log-entry">${escapeHtml(l)}</div>`).join("")||'<div class="log-entry">Nenhuma ação registrada neste protótipo.</div>'}</div>
+  </div>
+ </div>`;
+}
+function findComment(id){for(const videos of Object.values(data))for(const v of videos){const c=v.comments.find(x=>x.id===id);if(c)return {comment:c,video:v}}return null}
+function toggleContent(videoId){const card=document.querySelector(`[data-video="${videoId}"]`);if(!card)return;const expanded=card.classList.toggle("expanded");const btn=card.querySelector(".content-toggle");if(btn){btn.textContent=expanded?"Ocultar comentários⌃":"Ver comentários⌄";btn.setAttribute("aria-expanded",String(expanded));btn.title=expanded?"Recolher conteúdo e comentários":"Expandir conteúdo e comentários"}}
+function expandContentForComment(id){const el=document.getElementById("comment-"+id);const card=el?.closest("[data-video]");if(card&&!card.classList.contains("expanded")){card.classList.add("expanded");const btn=card.querySelector(".content-toggle");if(btn){btn.textContent="Ocultar comentários⌃";btn.setAttribute("aria-expanded","true")}}}
+function toggleComment(id){expandContentForComment(id);document.getElementById("comment-"+id)?.classList.toggle("expanded")}
+function toggleAllComments(videoId){const card=document.querySelector(`[data-video="${videoId}"]`);if(!card)return;if(!card.classList.contains("expanded"))toggleContent(videoId);const cs=card.querySelectorAll(".comment");const shouldExpand=[...cs].some(c=>!c.classList.contains("expanded"));cs.forEach(c=>c.classList.toggle("expanded",shouldExpand));card.querySelector(".comment-summary .button").textContent=shouldExpand?"Recolher comentários⌃":"Expandir comentários⌄"}
+function addLog(c,msg){if(!c.logs)c.logs=[];c.logs.unshift(new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})+" — "+msg)}
+function evaluateComment(id){const found=findComment(id);if(!found)return;const c=found.comment;const t=c.text.toLowerCase();let sentiment="Neutro",intent="Interação",severity="Baixa",note="Comentário sem sinal claro de conflito. Responda de forma objetiva e coerente com o tom do criador.";if(/legibilidade|legível|legivel|legendas|legenda|subtítulo|subtitulo|acessibilidade|acessível|acessivel|não consegui ler|nao consegui ler|audiodescri|contraste/.test(t)){sentiment="Negativo";intent="Feedback de acessibilidade";severity="Média";note="O comentário relata uma possível barreira de acesso. Reconheça o impacto e peça detalhes se necessário, sem afirmar que o problema já foi resolvido."}else if(/amei|ótim|incrível|parabéns|chorei|bom demais|natural|melhor/.test(t)){sentiment="Positivo";intent="Elogio / engajamento";note="Interação positiva. Agradeça e incentive a continuidade da conversa, sem soar repetitivo."}else if(/não|nao|confus|baixo|rápido|rapido|errad|falta|faz sentido|mudou/.test(t)){sentiment="Negativo";intent="Crítica / feedback";severity="Média";note="Há uma crítica ou fricção. Reconheça o ponto específico e evite ironia ou confronto."}else if(/parte|continua|episódio|episodio|onde|quando/.test(t)){sentiment="Neutro";intent="Solicitação de conteúdo";note="A pessoa demonstra interesse em mais conteúdo ou busca informação. Responda apenas com detalhes confirmados."}recordDemoJevAnalysis(c,{sentiment,emotion:sentiment==="Negativo"?"FRUSTRATION":sentiment==="Positivo"?"JOY":"CURIOSITY",intent,topic:/acessibilidade/i.test(intent)?"ACCESSIBILITY":/elogio|engajamento/i.test(intent)?"CONTENT":/técnica|continuidade/i.test(intent)?"CONTENT_QUALITY":"GENERAL",entity:/inteligência artificial|\bia\b/i.test(t)?"INTELIGÊNCIA ARTIFICIAL":null,spamScore:0.01,toxicityScore:sentiment==="Negativo"?0.08:0.01,engagementValue:sentiment==="Positivo"?0.82:sentiment==="Negativo"?0.37:0.58,confidence:0.91,rationale:note,provider:"JEV",model:"jev-comment-evaluator-demo",schemaVersion:"1",generatedAt:new Date().toISOString(),severity});addLog(c,"Comentário avaliado com JEV (simulação)");render();expandContentForComment(id);document.getElementById("comment-"+id)?.classList.add("expanded");showToast("Avaliação do comentário concluída (simulação).")}
+function generateReply(id){
+ const found=findComment(id);if(!found)return;
+ const c=found.comment,analysis=currentAnalysis(found.comment),profile=readToneProfile(activeNetwork),tone=profile.primaryTone,concise=profile.modifiers.includes("CONCISE");
+ if(!analysis){showToast("Avalie o comentário antes de gerar uma sugestão com IA.");return}
+ let reply="Obrigado por compartilhar sua opinião!";
+ if(analysis.intent==="Feedback de acessibilidade"){
+  const replies={FRIENDLY:concise?"Obrigado por avisar sobre a dificuldade de leitura. Qual trecho ficou mais difícil?":"Obrigado por compartilhar esse ponto. Entendo que a dificuldade de leitura possa atrapalhar. Qual trecho foi mais difícil de acompanhar?",PROFESSIONAL:concise?"Agradeço pelo aviso sobre a legibilidade. Qual trecho foi mais difícil?":"Agradeço por sinalizar essa dificuldade de leitura. Poderia indicar qual trecho foi mais difícil de acompanhar?",CASUAL:concise?"Valeu por avisar sobre a leitura. Qual trecho ficou difícil?":"Valeu por contar. A dificuldade de leitura pode atrapalhar mesmo. Qual trecho ficou mais difícil?",EMPATHETIC:concise?"Entendo como isso pode atrapalhar. Qual trecho foi mais difícil?":"Entendo como uma dificuldade de leitura pode atrapalhar a experiência. Obrigado por compartilhar. Qual trecho foi mais difícil de acompanhar?"};
+  reply=replies[tone];
+ }else if(analysis.intent==="Interação"){
+  const replies={FRIENDLY:"Obrigado por perguntar! Posso compartilhar mais detalhes sobre o processo de criação.",PROFESSIONAL:"Agradeço pelo interesse. Posso compartilhar mais detalhes sobre o processo de criação.",CASUAL:"Boa pergunta! Posso contar mais sobre como esse conteúdo foi criado.",EMPATHETIC:"Obrigado por querer entender melhor. Posso compartilhar mais sobre o processo de criação."};
+  reply=concise?"Obrigado por perguntar!":replies[tone];
+ }else if(/parte|continua|episódio|episodio/.test(c.text.toLowerCase())){
+  reply=concise?"Obrigado por acompanhar! O que você gostaria de ver na próxima parte?":"Obrigado por acompanhar! Ainda não tenho informações confirmadas para compartilhar. O que você gostaria de ver na próxima parte?";
+ }else if(analysis.sentiment==="Positivo"){
+  reply=tone==="PROFESSIONAL"?"Agradeço pelo carinho e por acompanhar o conteúdo.":tone==="CASUAL"?"Valeu pelo carinho! Que bom ter você por aqui.":tone==="EMPATHETIC"?"Que bom saber que o conteúdo chegou até você. Obrigado pelo carinho!":"Que bom saber que você gostou! Obrigado por acompanhar.";
+ }else if(analysis.sentiment==="Negativo"){
+  reply=tone==="PROFESSIONAL"?"Agradeço por compartilhar sua observação. Poderia dar mais detalhes sobre o ponto que mencionou?":tone==="CASUAL"?"Valeu por avisar. Pode contar mais sobre o ponto que você mencionou?":"Obrigado por compartilhar esse ponto. Pode contar mais sobre o que aconteceu?";
+ }
+ if(profile.modifiers.includes("ENTHUSIASTIC")&&analysis.sentiment==="Positivo"&&!concise)reply+=" É ótimo ter você nessa conversa!";
+ if(profile.modifiers.includes("WARM")&&analysis.sentiment==="Neutro"&&!concise)reply+=" Agradeço por fazer parte da conversa.";
+ if(concise&&analysis.sentiment==="Positivo")reply=tone==="PROFESSIONAL"?"Agradeço pelo carinho.":tone==="CASUAL"?"Valeu pelo carinho!":"Obrigado pelo carinho!";
+ if(concise&&analysis.sentiment==="Negativo"&&analysis.intent!=="Feedback de acessibilidade")reply="Obrigado por compartilhar esse ponto. Pode contar mais?";
+ document.getElementById("reply-"+id).value=reply;
+ addLog(c,`Resposta sugerida gerada (simulação · tom ${toneLabels[tone]})`);
+ showToast("Sugestão simulada. Revise o texto antes de enviar.");
+}
+function sendReply(id){const f=findComment(id);if(!f)return;const c=f.comment;const value=document.getElementById("reply-"+id).value.trim();if(!value){showToast("Escreva ou gere uma resposta antes de enviar.");return}if(!confirm("Enviar esta resposta individualmente ao comentário de "+c.author+"? (Simulação)"))return;c.response=value;c.replied=true;c.sent=true;addLog(c,"Resposta enviada individualmente (simulação)");render();expandContentForComment(id);document.getElementById("comment-"+id)?.classList.add("expanded");showToast("Resposta registrada como enviada (simulação).")}
+function reviewResponse(id){const f=findComment(id);if(!f)return;const c=f.comment;const val=document.getElementById("reply-"+id).value.trim();if(!val){showToast("Gere ou escreva uma resposta antes de avaliá-la.");return}const risky=/burro|idiota|lixo|cala a boca|mentira ridícula/i.test(val);const aligned=val.length>12&&!risky;c.responseEvaluation={recommend:aligned,note:aligned?"Tom respeitoso e resposta relacionada ao comentário. Revise fatos e promessas antes de enviar.":"O texto pode soar inadequado ou não responder ao ponto principal. Reescreva antes de enviar."};addLog(c,"Resposta avaliada com JEV (simulação)");render();expandContentForComment(id);document.getElementById("comment-"+id)?.classList.add("expanded");showToast("Avaliação opcional da resposta concluída.")}
+function toggleLog(id){document.getElementById("log-"+id)?.classList.toggle("show")}
+function syncContent(videoId){const v=Object.values(data).flat().find(x=>x.id===videoId);if(!v)return;const btn=document.querySelector(`[data-video="${videoId}"] .video-actions button`);if(btn){btn.disabled=true;btn.innerHTML="↻ Sincronizando…"}setTimeout(()=>{if(btn){btn.disabled=false;btn.innerHTML='↻ <span class="hide-mobile">Sincronizar</span>'}v.syncedAt="agora";showToast(`Sincronização de “${v.title}” concluída. Nenhum comentário novo encontrado (simulação).`);document.getElementById("networkSubtitle").textContent=`${data[activeNetwork].length} conteúdos de exemplo · última sincronização agora`},650)}
+function syncNetwork(){const btn=document.getElementById("syncNetwork");btn.disabled=true;btn.innerHTML='<span style="font-size:16px">↻</span> Sincronizando…';setTimeout(()=>{btn.disabled=false;btn.innerHTML='<span style="font-size:16px">↻</span> Sincronizar rede';showToast(`Sincronização de ${networkInfo[activeNetwork].name} concluída. Comentários comparados com os dados persistidos; nenhum novo comentário encontrado (simulação).`);document.getElementById("networkSubtitle").textContent=`${data[activeNetwork].length} conteúdos de exemplo · última sincronização agora`},900)}
+document.querySelectorAll(".social-tab").forEach(b=>b.addEventListener("click",()=>{activeNetwork=b.dataset.network;document.getElementById("searchInput").value="";document.getElementById("statusFilter").value="all";updateToneForm();render()}));
+document.getElementById("searchInput").addEventListener("input",render);document.getElementById("statusFilter").addEventListener("change",render);document.getElementById("syncNetwork").addEventListener("click",syncNetwork);
+document.getElementById("toneSettingsToggle").addEventListener("click",()=>{const panel=document.getElementById("toneSettings"),button=document.getElementById("toneSettingsToggle");panel.hidden=!panel.hidden;button.setAttribute("aria-expanded",String(!panel.hidden));if(!panel.hidden)updateToneForm()});
+document.getElementById("saveToneProfile").addEventListener("click",saveToneProfile);
+document.querySelectorAll("[data-tone-modifier]").forEach(input=>input.addEventListener("change",updateToneModifierAvailability));
+document.getElementById("toneNote").addEventListener("input",event=>{document.getElementById("toneNoteCount").textContent=`${event.target.value.length}/500`});
+updateToneForm();render();
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+ALTER TABLE social_comments
+  ADD COLUMN IF NOT EXISTS app_replied BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS external_reply_status TEXT NOT NULL DEFAULT 'UNKNOWN'
+    CHECK (external_reply_status IN ('REPLIED', 'NOT_REPLIED', 'UNKNOWN'));

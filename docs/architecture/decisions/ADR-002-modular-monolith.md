@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-The MVP is private and initially operated by one creator.
+The MVP is a private multi-tenant product. It requires tenant isolation while retaining a single deployable modular monolith.
 
 ## Decision
 

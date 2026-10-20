@@ -2,9 +2,15 @@
 
 ## Content
 
-BR-CONTENT-001: Content must have a valid media reference before publication.
+BR-CONTENT-001: Content is publishable only when it is ready and has a valid media reference returned after successful storage.
 
 BR-CONTENT-002: A Content may have multiple independent Publications.
+
+BR-CONTENT-003: New Content starts in draft; the creator can manually transition it between draft and ready. Editorial metadata changes do not change readiness. Ready requires a valid stored media reference.
+
+BR-CONTENT-004: Content requires non-empty editorial title and description after trimming; destination-specific metadata belongs to its Publication.
+
+BR-CONTENT-005: Every Content belongs to one tenant. The tenant is resolved from authenticated server context, never from client input; reads and writes are scoped to that tenant.
 
 ## Publication
 

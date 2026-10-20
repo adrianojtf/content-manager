@@ -2,47 +2,45 @@
 
 ## 1. Objective
 
-Build a private creator platform that centralizes video publication, performance data, comments and AI-assisted audience intelligence.
+Deliver the product incrementally, starting with a focused creator workflow: list existing publications and their comments from connected social platforms, generate and edit suggested replies, and let the creator send each reply manually. Dashboard, product-user authentication, video publishing, and any streaming product are later phases.
 
 ## 2. MVP Capabilities
 
-### Content
+The first MVP is a controlled, single-creator pilot without public multi-tenant access or product-user login. Social account authorization remains required: each supported platform must be connected through its own approved authorization flow so the application can read publications/comments and send replies. This defers product-user authentication, not platform OAuth, access-token protection, or platform permission checks. Tenant identity and isolation contracts remain the target for the later authentication phase; the pilot must not be exposed as a public multi-user service.
 
-- Upload video.
-- Manage metadata.
-- Maintain draft/ready states.
-- Store media references.
+### Publications and Community — Phase 1
 
-### Publishing
+- Connect supported social accounts using platform authorization.
+- List existing publications and their comments where the platform permits.
+- Generate a suggested response to a comment.
+- Let the creator edit the suggestion before sending.
+- Require an explicit manual send action for every response; no automatic replies.
+- Report unsupported capabilities and per-platform failures without implying feature parity.
 
-- Connect social accounts.
-- Select target platforms.
-- Configure platform-specific metadata.
-- Publish.
-- Schedule.
-- Track independent publication status.
-- Retry failed publications.
+### Dashboard — Phase 2
 
-### Analytics
+- Build the manually fed Novelaria dashboard described in the [Analytics PRD](prds/analytics.md).
+- Keep analytics entry separate from social API synchronization unless a later scope explicitly adds it.
 
-- Collect available metrics.
-- Store historical snapshots.
-- Compare publications and platforms.
-- Correlate performance with audience reactions.
+### Product-user Authentication — Phase 3
 
-### Community
+- Add managed OIDC login, tenant membership, administration, and tenant isolation for a multi-user service.
+- Authentication and access control must be completed before opening the product to multiple users or tenants.
 
-- Synchronize comments.
-- Centralize comments.
-- Classify comments.
-- Suggest responses.
-- Evaluate suggested responses.
-- Allow manual approval.
-- Publish responses where supported.
+### Video Publishing — Phase 4
 
-### Audience Intelligence
+- Upload video and manage content metadata.
+- Publish to independently supported platforms and track each publication result.
+- Scheduling, retry, and multi-platform publishing are included only after platform-specific capabilities and policies are verified.
 
-JEV should evaluate comments to identify:
+### Future Exploration — Vertical-Drama Streaming
+
+- After consolidating the preceding product phases, evaluate the feasibility of a vertical-drama streaming platform.
+- Potential creator subscriptions may apply to a channel, playlist, or series/novel; this is discovery only, not committed MVP scope.
+
+### Future Capability — Audience Intelligence
+
+After the core phases are consolidated and separately prioritized, JEV may evaluate comments to identify:
 
 - sentiment;
 - emotion;
@@ -57,9 +55,9 @@ JEV should evaluate comments to identify:
 - recurring patterns;
 - engagement opportunities.
 
-### Content Intelligence
+### Future Capability — Content Intelligence
 
-Aggregate comment analysis and performance data to produce:
+When separately prioritized, aggregate comment analysis and performance data to produce:
 
 - audience insights;
 - recurring themes;
@@ -84,37 +82,43 @@ External Action
 
 JEV must not directly publish comments or modify social accounts.
 
-## 4. Initial Platform Priority
+## 4. Platform Scope by Phase
 
-1. YouTube
-2. Instagram
-3. Facebook Pages
-4. TikTok
+- The active MVP targets YouTube, Instagram professional Business/Creator accounts, Facebook Pages managed by the authorizing user, and TikTok Business accounts for comment workflows. Each platform must pass its own account, permission, access-tier, and operation-capability checks; TikTok scope is owned organic videos only.
+- TikTok comment integration is limited to authorized TikTok Business accounts and owned organic videos, subject to current API access/permission verification. TikTok video publishing remains out of scope; manual TikTok analytics entry belongs to Phase 2.
+- Video publishing capabilities are Phase 4, not part of the Phase 1 reply workflow.
 
-TikTok community/analytics capabilities remain subject to exact API access and approval.
+Platform capabilities are independent. Validate each operation against current official requirements and never assume capability parity. The analytics PRD separately defines the platform scope for the manually fed Phase 2 dashboard.
 
-## 5. Non-Goals
+## 5. Capability PRDs
 
-Initially exclude:
+- [Content Management](prds/content-management.md) — [Tech spec](../specifications/technical-content-management.md)
+- [Social Accounts and Publishing](prds/social-publishing.md) — [Tech spec](../specifications/technical-social-publishing.md)
+- [Publication Analytics](prds/analytics.md) — [Tech spec](../specifications/technical-analytics.md)
+- [Community Management](prds/community-management.md) — [Tech spec](../specifications/technical-community-management.md)
+- [Audience and Content Intelligence](prds/audience-intelligence.md) — [Tech spec](../specifications/technical-audience-intelligence.md)
+- [MVP implementation backlog (epics and tasks)](implementation-backlog.md)
 
-- billing;
-- multi-tenancy;
-- microservices;
-- Kubernetes;
-- advanced RBAC;
-- full video editing;
-- advertising management.
+## 6. Non-Goals
 
-## 6. Success Criteria
+For Phase 1, exclude:
 
-The creator can:
+- product-user login, public multi-user access, and tenant administration;
+- dashboards and analytics;
+- video upload and publishing;
+- automatic reply sending;
+- billing, microservices, Kubernetes, advanced RBAC, full video editing, and advertising management.
 
-1. Publish one video to multiple supported platforms.
-2. Centralize performance metrics.
-3. Centralize comments.
-4. Analyze comments with JEV.
-5. See audience patterns.
-6. Generate a response suggestion.
-7. Have JEV evaluate the response.
-8. Approve or reject it.
-9. Generate actionable content recommendations.
+A future vertical-drama streaming service, including subscriptions for channels, playlists, or series, remains exploratory and is not committed scope.
+
+## 7. Success Criteria
+
+For Phase 1, the creator can:
+
+1. Connect a supported social account with the platform's approved authorization flow.
+2. View the account's existing publications and available comments.
+3. Generate a suggested response to a comment.
+4. Edit the suggestion and see the final text before sending.
+5. Manually send the response with an explicit action and see success, failure, or unsupported status.
+
+No response is sent automatically. Dashboard/analytics, user login, and video publishing are delivered only in their later phases.

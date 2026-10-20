@@ -1,0 +1,39 @@
+{
+  "name": "content-manager",
+  "version": "1.0.0",
+  "description": "Private MVP for centralized video publishing, analytics, comments and AI-assisted audience intelligence.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "test"
+  },
+  "scripts": {
+    "test": "npm run build && npm run build:e2e && node --test test",
+    "build": "tsc -p tsconfig.json",
+    "build:e2e": "tsc -p tsconfig.e2e.json",
+    "start": "node dist/presentation/http/main.js",
+    "start:local": "npm run build && node --env-file=.env.local dist/presentation/http/main.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "private": true,
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.980.0",
+    "@nestjs/common": "^11.1.18",
+    "@nestjs/core": "^11.1.18",
+    "@nestjs/platform-express": "^11.1.18",
+    "amqplib": "0.10.8",
+    "jose": "5.9.6",
+    "pg": "8.16.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@types/amqplib": "0.10.5",
+    "@types/node": "^20.17.10",
+    "@types/pg": "8.11.10",
+    "pg-mem": "3.0.5",
+    "typescript": "^5.7.3"
+  }
+}

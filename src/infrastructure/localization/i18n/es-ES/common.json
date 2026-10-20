@@ -1,0 +1,9 @@
+{
+  "app.name": "Gestor de Contenido",
+  "user.create": "Crear usuario",
+  "user.greeting": "Hola, {name}",
+  "items.count": {
+    "one": "{count} elemento",
+    "other": "{count} elementos"
+  }
+}

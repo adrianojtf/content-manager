@@ -18,10 +18,11 @@ Evaluate an audience comment using JEV and persist structured intelligence.
 - intent;
 - topic;
 - entity;
-- spam score;
-- toxicity score;
-- engagement value;
-- confidence.
+- spam score normalized to `[0,1]`;
+- toxicity score normalized to `[0,1]`;
+- engagement value normalized to `[0,1]`;
+- confidence normalized to `[0,1]`;
+- provider/model, schema version, rationale, and evaluated timestamp.
 
 ## Flow
 
@@ -44,5 +45,7 @@ Persist CommentAnalysis
 - [ ] Comment is evaluated through the application port.
 - [ ] JEV is not accessed by the domain directly.
 - [ ] Structured output is validated.
-- [ ] Confidence is persisted.
-- [ ] Invalid output does not mutate the comment state.
+- [ ] Confidence and rationale are persisted in an immutable versioned JEV analysis.
+- [ ] Invalid output does not mutate the comment state or replace a prior analysis.
+- [ ] A human correction to classification labels or spam/toxicity/engagement scores is appended separately; original JEV values, confidence, and rationale remain unchanged.
+- [ ] Corrected numeric scores remain within `[0,1]` and include actor source/time plus an optional reason.

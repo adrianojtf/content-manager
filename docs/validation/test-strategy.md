@@ -5,18 +5,32 @@
 ```text
 SPEC
   ↓
-IMPLEMENTATION
+WRITE FAILING TEST (RED)
   ↓
-UNIT TEST
+IMPLEMENT MINIMUM CHANGE (GREEN)
   ↓
-INTEGRATION TEST
+REFACTOR (KEEP TESTS GREEN)
   ↓
-FUNCTIONAL TEST
+UNIT TESTS
+  ↓
+INTEGRATION TESTS
+  ↓
+E2E TESTS
   ↓
 AI EVALUATION
   ↓
 DONE
 ```
+
+## Test Requirements
+
+- Apply TDD to new behavior and bug fixes: add or update a failing test before production code, make it pass with the smallest suitable change, then refactor while keeping tests green.
+- Every application use case requires unit tests for its behavior and relevant domain rules.
+- Every external integration boundary requires integration tests.
+- Critical user journeys require E2E tests across the relevant presentation, application, and persistence flow.
+- E2E and integration tests must use deterministic external-service test doubles by default; do not depend on production APIs or nondeterministic AI output.
+- E2E tests complement, and do not replace, unit and integration tests.
+- Follow Clean Code: keep tests and production code readable, cohesive, and free of unnecessary duplication or speculative abstractions.
 
 ## AI-Specific Validation
 

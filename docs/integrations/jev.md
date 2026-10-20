@@ -2,7 +2,7 @@
 
 ## 1. Role
 
-JEV is the initial provider for comment evaluation, response evaluation and audience/content intelligence.
+JEV is the initial provider for comment evaluation, response evaluation and audience/content intelligence. It does not generate response text or make social API calls; response text uses a separate provider capability.
 
 ## 2. Primary Use Cases
 
@@ -31,14 +31,17 @@ Output:
 }
 ```
 
+All numeric comment scores (`spamScore`, `toxicityScore`, `engagementValue`, and `confidence`) are normalized to `[0,1]`. The application persists this JEV artifact immutably. Creator corrections to classification labels or the first three scores are separate audit records; they never change JEV confidence, rationale, or original output.
+
 ### Response Evaluation
 
 Input:
 
-- original comment;
-- generated response;
-- content context;
-- creator communication policy.
+- original comment text;
+- exact saved final response revision;
+- effective persisted CommentAnalysis (including append-only creator corrections).
+
+Content context and creator communication policy are not sent in the current pilot adapter because their contracts are not yet defined; no second comment-classification call is made.
 
 Output:
 
@@ -55,6 +58,8 @@ Output:
   "rationale": "Response directly addresses the viewer's question."
 }
 ```
+
+The evaluation is optional and manually requested. Its recommendation and risk/confidence scores are advisory only: none can trigger or block the creator's separate per-comment manual send.
 
 ### Audience Intelligence
 
@@ -114,7 +119,13 @@ JevAdapter
 JEV
 ```
 
-## 5. Validation
+## 5. Initial HTTP Adapter Contract
+
+The repository does not contain JEV endpoint/authentication details. The comment adapter accepts `JEV_COMMENT_EVALUATION_URL` as a complete HTTPS (or localhost test) endpoint. The separate response adapter accepts `JEV_RESPONSE_EVALUATION_URL`; it sends the comment, effective persisted `CommentAnalysis`, and exact saved response text, and expects the structured Response Evaluation fields above. Neither adapter guesses a provider host/path. Both attach provenance, validate normalized output, and are separated by application ports so provider wire contracts do not enter use cases.
+
+`JEV_API_KEY` is optional and shared by these adapters. If provided, it is sent only in a configurable header (`JEV_API_KEY_HEADER`, default `Authorization`; `JEV_API_KEY_PREFIX`, default `Bearer`). Endpoint and credentials are read lazily when an evaluation executes, not at application startup. Live integration remains unverified until the operator supplies each actual URL and confirms the request/auth/schema contract.
+
+## 6. Validation
 
 The application validates:
 

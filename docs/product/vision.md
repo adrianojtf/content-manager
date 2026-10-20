@@ -20,20 +20,18 @@ It should evolve toward:
 
 ## Initial User
 
-A single creator using the platform privately for validation.
+Creators operating within tenant-isolated workspaces during private validation.
 
 ## Evolution
 
 ```text
-Private MVP
+Multi-tenant Private MVP
     ↓
 Creator Intelligence Tool
     ↓
-Multi-account Creator Platform
-    ↓
 Professional / Agency Platform
     ↓
-SaaS
+Expanded Creator Platform
 ```
 
 ## AI / JEV Position

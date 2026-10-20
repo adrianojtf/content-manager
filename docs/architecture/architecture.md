@@ -130,12 +130,14 @@ interface CommentResponder {
 }
 ```
 
+`MetricsReader` is a future provider-integration port for analytics. The initial Novelaria dashboard records performance manually and does not call this port.
+
 ## 7. Async Processing
 
 Use RabbitMQ for:
 
 - publication;
-- metric synchronization;
+- future provider metric synchronization (not required by the manually fed Novelaria dashboard MVP);
 - comment synchronization;
 - comment evaluation;
 - response evaluation;
@@ -158,3 +160,14 @@ CommentAnalysis
     ↓
 Response / Insight / Decision
 ```
+
+## 9. Internationalization and Localization
+
+The application-owned localization port, locale/timezone policies, JSON catalog adapter, and decisions are specified in [Internationalization and Localization Architecture](internationalization.md), [ADR-005](decisions/ADR-005-internationalization.md), and the [localization contract](../contracts/localization.md). The domain remains language-independent.
+
+## 10. Infrastructure Adapter Foundations
+
+- Relational persistence uses PostgreSQL through `pg`; the application-facing port supports parameterized queries and transactions. The HTTP composition root creates a configured pool, verifies connectivity during startup, and closes it during shutdown. Runtime migrations are not applied automatically; schema changes use the ordered SQL migration files. Physical schemas and repositories remain capability-specific; no ORM is selected.
+- RabbitMQ uses `amqplib` behind a job-queue port. Messages are JSON-serialized, and each consumer explicitly chooses `requeue` or `reject` after handler failure. Retry limits, backoff, dead-lettering, and delivery guarantees remain open.
+- S3-compatible media storage uses AWS SDK v3 behind the media-storage port. The returned reference contains an object key, not a signed URL or provider credentials.
+- Connection strings, credentials, endpoints, and bucket configuration are supplied at the infrastructure/composition boundary and are not stored in domain objects or logged.

@@ -1,0 +1,17 @@
+ALTER TABLE comment_workflow_events
+  DROP CONSTRAINT IF EXISTS comment_workflow_events_event_type_check;
+
+ALTER TABLE comment_workflow_events
+  ADD CONSTRAINT comment_workflow_events_event_type_check CHECK (event_type IN (
+    'COMMENT_SYNCED',
+    'COMMENT_ANALYSIS_CREATED',
+    'COMMENT_CLASSIFIED',
+    'COMMENT_ANALYSIS_CORRECTED',
+    'RESPONSE_SUGGESTION_GENERATED',
+    'RESPONSE_SUGGESTION_EDITED',
+    'MANUAL_RESPONSE_CREATED',
+    'MANUAL_RESPONSE_EDITED',
+    'RESPONSE_EVALUATED',
+    'MANUAL_REPLY_ATTEMPTED',
+    'MANUAL_REPLY_RESULT'
+  ));
