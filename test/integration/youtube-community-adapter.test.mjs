@@ -72,8 +72,10 @@ test('YouTube community adapter normalizes comment thread identity and preserves
       text: 'Great episode',
       createdAt: '2026-10-12T14:00:00Z',
       canReply: true,
+      canLike: false,
       externalReplyStatus: 'UNKNOWN',
     }],
+    creatorReplies: [],
     nextCursor: 'next-comments',
   });
   assert.equal(requests[0].url.pathname, '/youtube/v3/commentThreads');
@@ -89,16 +91,30 @@ test('YouTube community adapter reports creator reply state only when supported 
   const creatorReply = createAdapter([jsonResponse({ items: [{
     ...thread,
     snippet: { ...thread.snippet, totalReplyCount: 2 },
-    replies: { comments: [{ snippet: { authorChannelId: { value: 'UC-viewer' } } }, { snippet: { authorChannelId: { value: account.externalAccountId } } }] },
+    replies: { comments: [
+      { id: 'viewer-reply', snippet: { authorChannelId: { value: 'UC-viewer' }, textDisplay: 'Viewer follow-up', publishedAt: '2026-10-12T14:30:00Z' } },
+      { id: 'creator-reply', snippet: { authorChannelId: { value: account.externalAccountId }, textDisplay: 'Thanks for watching!', publishedAt: '2026-10-12T15:00:00Z' } },
+    ] },
   }] })]);
-  assert.equal((await creatorReply.adapter.getComments(account, 'video-1')).items[0].externalReplyStatus, 'REPLIED');
+  const pageWithCreatorReply = await creatorReply.adapter.getComments(account, 'video-1');
+  assert.equal(pageWithCreatorReply.items[0].externalReplyStatus, 'REPLIED');
+  assert.deepEqual(pageWithCreatorReply.creatorReplies, [{
+    platform: 'youtube',
+    externalReplyId: 'creator-reply',
+    externalCommentId: 'comment-1',
+    externalPublicationId: 'video-1',
+    text: 'Thanks for watching!',
+    createdAt: '2026-10-12T15:00:00.000Z',
+  }]);
 
   const incompleteReplies = createAdapter([jsonResponse({ items: [{
     ...thread,
     snippet: { ...thread.snippet, totalReplyCount: 6 },
     replies: { comments: [{ snippet: { authorChannelId: { value: 'UC-viewer' } } }] },
   }] })]);
-  assert.equal((await incompleteReplies.adapter.getComments(account, 'video-1')).items[0].externalReplyStatus, 'UNKNOWN');
+  const incompletePage = await incompleteReplies.adapter.getComments(account, 'video-1');
+  assert.equal(incompletePage.items[0].externalReplyStatus, 'UNKNOWN');
+  assert.deepEqual(incompletePage.creatorReplies, []);
 });
 
 test('YouTube community adapter blocks read and write calls when the credential lacks the requested scope', async () => {
@@ -171,5 +187,6 @@ function pageComment() {
     text: 'Great episode',
     createdAt: '2026-10-12T14:00:00Z',
     canReply: true,
+    canLike: false,
   };
 }

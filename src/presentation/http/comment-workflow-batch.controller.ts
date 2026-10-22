@@ -23,7 +23,7 @@ export class CommentWorkflowBatchController {
 
   @Post('workflow-batches')
   async execute(@Body() body: Record<string, unknown>) {
-    const allowedKeys = new Set(['operation', 'scope', 'accountId', 'publicationId', 'externalCommentId', 'platform', 'language']);
+    const allowedKeys = new Set(['operation', 'scope', 'accountId', 'publicationId', 'externalCommentId', 'platform']);
     const allowedOperations = new Set(['sync', 'classify', 'generate']);
     const allowedScopes = new Set(['comment', 'publication', 'account', 'platform']);
     if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => !allowedKeys.has(key))
@@ -39,7 +39,6 @@ export class CommentWorkflowBatchController {
         publicationId: body.publicationId as string | undefined,
         externalCommentId: body.externalCommentId as string | undefined,
         platform: body.platform as SocialPlatform | undefined,
-        language: body.language as string | undefined,
       });
     } catch (error) {
       this.throwHttpError(error);

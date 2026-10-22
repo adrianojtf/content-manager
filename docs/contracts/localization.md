@@ -90,3 +90,5 @@ i18n/
 ```
 
 A catalog adapter can be replaced without changing domain or application business rules.
+
+The static CreatorDesk browser catalogs are shipped as ES modules under `web/locales/`, with one aggregate catalog per supported BCP 47 locale. Catalog-key coverage is tested against the base `pt-BR` catalog.

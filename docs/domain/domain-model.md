@@ -42,7 +42,7 @@ A historical performance snapshot associated with a Publication, including provi
 
 ### Comment
 
-Audience interaction associated with a Publication.
+Audience interaction associated with a Publication. Preserve provider reply capability and provider-supported like capability independently. Track whether this application liked the comment separately from external counts or likes performed outside the application.
 
 ### CommentAnalysis
 
@@ -58,7 +58,9 @@ Suggested fields:
 - spamScore
 - toxicityScore
 - engagementValue
-- confidence
+- per-question confidence/probability evidence
+- optional provider token usage
+- nullable rationale (TypeSafe Jev does not generate one)
 
 ### ResponseSuggestion
 
@@ -74,7 +76,7 @@ Suggested fields:
 
 ### ResponseEvaluation
 
-JEV evaluation of a proposed response.
+TypeSafe Jev evaluation of a proposed response.
 
 Suggested fields:
 
@@ -86,6 +88,8 @@ Suggested fields:
 - hallucinationRisk
 - publishRecommendation
 - confidence
+- per-question evidence and optional provider token usage
+- nullable rationale (TypeSafe Jev does not generate one)
 - rationale
 
 ### AudienceInsight

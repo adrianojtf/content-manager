@@ -73,6 +73,16 @@ test('Facebook Login authorization URL uses state and only Page read/comment man
   assert.equal(url.searchParams.has('code_challenge'), false);
 });
 
+test('Facebook Login for Business authorization URL sends config_id instead of scope when configured', async () => {
+  const { client } = createClient([], { ...environment, FACEBOOK_OAUTH_CONFIG_ID: 'test-config-id' });
+  const url = new URL(await client.buildAuthorizationUrl('csrf-state'));
+
+  assert.equal(url.searchParams.get('config_id'), 'test-config-id');
+  assert.equal(url.searchParams.has('scope'), false);
+  assert.equal(url.searchParams.get('response_type'), 'code');
+  assert.equal(url.searchParams.get('state'), 'csrf-state');
+});
+
 test('Facebook code exchange validates permissions, returns selectable Pages, and stores the temporary user token only in the vault', async () => {
   const { client, requests } = createClient(callbackResponses());
   const selection = await client.beginPageSelection('authorization-code', tenantId);
@@ -88,6 +98,26 @@ test('Facebook code exchange validates permissions, returns selectable Pages, an
   assert.equal(requests[2].url.pathname, '/v25.0/me/permissions');
   assert.equal(requests[3].url.pathname, '/v25.0/me/accounts');
   assert.deepEqual(requests[4].stored, {
+    tenantId,
+    platform: 'facebook',
+    accessToken: 'long-lived-user-token-secret',
+    refreshToken: null,
+    grantedScopes: ['pages_show_list', 'pages_read_engagement', 'pages_read_user_content', 'pages_manage_engagement'],
+    expiresAt: '2026-10-14T12:05:00.000Z',
+  });
+});
+
+test('Facebook accepts token responses without expires_in and still caps the temporary credential at five minutes', async () => {
+  const { client, requests } = createClient([
+    jsonResponse({ access_token: 'short-user-token-secret', token_type: 'bearer' }),
+    jsonResponse({ access_token: 'long-lived-user-token-secret', token_type: 'bearer' }),
+    jsonResponse(permissionResponse),
+    jsonResponse(pageResponse),
+  ]);
+  const selection = await client.beginPageSelection('authorization-code', tenantId);
+
+  assert.equal(selection.pages.length, 2);
+  assert.deepEqual(requests.find((request) => request.stored)?.stored, {
     tenantId,
     platform: 'facebook',
     accessToken: 'long-lived-user-token-secret',

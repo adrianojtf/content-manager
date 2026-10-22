@@ -18,7 +18,7 @@ Generate auditable audience insights and advisory content recommendations from a
 
 JEV is invoked only through capability-oriented application ports. It receives prepared context and has no direct persistence or social API access. See [Architecture](../architecture/architecture.md), [JEV Integration](../integrations/jev.md), [ADR-003](../architecture/decisions/ADR-003-jev-as-evaluator.md), and [ADR-004](../architecture/decisions/ADR-004-ai-human-control-boundary.md).
 
-UI locale and generated insight/recommendation language are separate concerns. Generated text and evidence remain auditable content, not translation catalog entries; AI-01 must decide the generation-language policy and whether any explicit presentation translation is permitted. UI labels and errors use the [localization contract](../contracts/localization.md), without changing evidence, business rules, or stored artifacts. See the [localization architecture](../architecture/internationalization.md).
+UI locale and generated insight/recommendation language are separate concerns. Every explicit insight or recommendation generation produces independent `pt-BR`, `en-US`, and `es-ES` variants using the same validated evidence context. Store each variant's language, provider/model, confidence, rationale, and provenance; partial language failures do not discard successful variants. UI localization never mutates evidence or generated artifacts. UI labels and errors use the [localization contract](../contracts/localization.md). See the [localization architecture](../architecture/internationalization.md).
 
 ## 3. Input and Output Contracts
 
@@ -52,6 +52,8 @@ Aggregate intelligence work is listed as asynchronous in the architecture. Exact
 ## 5. Evidence and Decision Rules
 
 - Every aggregate insight identifies the evidence period and supporting evidence.
+- Each generated insight and recommendation has independent Portuguese, English, and Spanish text variants, with per-language provider provenance and confidence.
+- Failure to generate one language variant does not discard other validated variants; the failure is recorded by language.
 - Metric evidence preserves whether it was entered manually or imported from a provider, its platform, and observation time; do not treat manually entered values as provider-verified.
 - Novelaria Episode metrics enter content-scoped context only through an explicit tenant-authorized Content association; never infer a link from episode code or title.
 - Distinguish observations derived from stored data from provider inferences.

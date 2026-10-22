@@ -27,11 +27,24 @@ const analysis = {
   spamScore: 0.01,
   toxicityScore: 0.01,
   engagementValue: 0.82,
+  continuationRequestProbability: 0.02,
   confidence: 0.94,
   rationale: 'A positive reaction about the character.',
   provider: 'JEV',
   model: 'test-model',
-  schemaVersion: '1',
+  schemaVersion: 'typesafe-systemone-v1',
+  signals: {
+    sentiment: { confidence: 0.94, probabilities: { POSITIVE: 0.94, NEUTRAL: 0.04, NEGATIVE: 0.02 } },
+    emotion: { confidence: 0.91, probabilities: { JOY: 0.91, OTHER: 0.09 } },
+    intent: { confidence: 0.9, probabilities: { REACTION: 0.9, OTHER: 0.1 } },
+    topic: { confidence: 0.88, probabilities: { CHARACTER: 0.88, OTHER: 0.12 } },
+    spam: { probability: 0.01 },
+    toxicity: { probability: 0.01 },
+    engagement: { rawScore: 3.28, normalizedScore: 0.82, confidence: 0.9, probabilities: { 0: 0.01, 1: 0.04, 2: 0.1, 3: 0.55, 4: 0.3 }, legend: { 0: 'low', 1: 'limited', 2: 'medium', 3: 'high', 4: 'very high' } },
+    needsExternalFacts: { probability: 0.05 },
+    requestsContinuation: { probability: 0.02 },
+  },
+  usage: { inputTokens: 128, outputTokens: 42 },
 };
 
 function createWorkflow(existingEvents = []) {
@@ -64,7 +77,7 @@ function createWorkflow(existingEvents = []) {
   };
 }
 
-test('RecordCommentAnalysis preserves the validated JEV artifact, confidence, and rationale as an immutable AI event', async () => {
+test('RecordCommentAnalysis preserves normalized TypeSafe evidence, usage, and provenance as an immutable AI event', async () => {
   const workflow = createWorkflow();
 
   const event = await workflow.recordAnalysis.execute({ accountId, externalCommentId: commentId, analysis });
@@ -82,6 +95,22 @@ test('RecordCommentAnalysis rejects invalid model scores without changing a prio
 
   await assert.rejects(
     workflow.recordAnalysis.execute({ accountId, externalCommentId: commentId, analysis: { ...analysis, confidence: 1.5 } }),
+    /COMMENT_ANALYSIS_INVALID/,
+  );
+  await assert.rejects(
+    workflow.recordAnalysis.execute({
+      accountId,
+      externalCommentId: commentId,
+      analysis: { ...analysis, signals: { ...analysis.signals, engagement: { ...analysis.signals.engagement, normalizedScore: 0.1 } } },
+    }),
+    /COMMENT_ANALYSIS_INVALID/,
+  );
+  await assert.rejects(
+    workflow.recordAnalysis.execute({
+      accountId,
+      externalCommentId: commentId,
+      analysis: { ...analysis, continuationRequestProbability: 1.1 },
+    }),
     /COMMENT_ANALYSIS_INVALID/,
   );
   assert.equal(workflow.events.length, 1);
@@ -136,11 +165,25 @@ test('CorrectCommentAnalysis rejects confidence/rationale edits and out-of-range
 test('RecordResponseSuggestion and ReviseResponseSuggestion preserve generated and manual text as linked artifacts', async () => {
   const workflow = createWorkflow();
   const toneProfile = { primaryTone: 'PROFESSIONAL', modifiers: ['CONCISE'], customNote: 'Use clear language.' };
+  const verifiedReleaseScheduleSnapshot = {
+    status: 'ACTIVE',
+    source: 'ACCOUNT',
+    schedule: {
+      enabled: true,
+      daysOfWeek: ['MONDAY', 'WEDNESDAY'],
+      localTime: '20:30',
+      timeZone: 'America/Sao_Paulo',
+      version: 2,
+      updatedAt: '2026-10-13T12:00:00.000Z',
+      confirmedAt: '2026-10-13T12:00:00.000Z',
+    },
+  };
   const generated = await workflow.recordSuggestion.execute({
     accountId,
     externalCommentId: commentId,
     suggestion: { text: 'AI response', language: 'pt-BR', intendedTone: 'FRIENDLY', provider: 'response-provider', model: 'model-v1', confidence: 0.88, rationale: 'Answers the question.' },
     toneProfile,
+    verifiedReleaseScheduleSnapshot,
   });
   const edited = await workflow.reviseSuggestion.execute({
     accountId,
@@ -159,6 +202,7 @@ test('RecordResponseSuggestion and ReviseResponseSuggestion preserve generated a
   assert.equal(edited.payload.text, 'Creator-edited response');
   assert.equal(generated.payload.text, 'AI response');
   assert.deepEqual(generated.payload.toneProfile, toneProfile);
+  assert.deepEqual(generated.payload.verifiedReleaseScheduleSnapshot, verifiedReleaseScheduleSnapshot);
 });
 
 test('creator-authored responses can start without comment analysis and edits preserve each manual version', async () => {
@@ -193,13 +237,35 @@ test('RecordResponseEvaluation binds immutable output to the exact current revis
   const workflow = createWorkflow();
   const generated = await workflow.recordSuggestion.execute({ accountId, externalCommentId: commentId, suggestion: { text: 'Generated', language: 'pt-BR', intendedTone: 'FRIENDLY', provider: 'generator', model: 'model', confidence: 0.8, rationale: null } });
   const edited = await workflow.reviseSuggestion.execute({ accountId, externalCommentId: commentId, suggestionEventId: generated.id, text: 'Final text' });
-  const evaluation = { relevance: 0.9, tone: 0.95, helpfulness: 0.9, factualRisk: 0.1, toxicityRisk: 0.05, hallucinationRisk: 0.1, publishRecommendation: 'APPROVE', confidence: 0.9, rationale: 'Relevant and safe.', provider: 'JEV', model: 'test-model', schemaVersion: '1' };
+  const evaluation = {
+    relevance: 0.9, tone: 0.95, helpfulness: 0.9, factualRisk: 0.1, toxicityRisk: 0.05, hallucinationRisk: 0.1,
+    publishRecommendation: 'APPROVE', confidence: 0.9, rationale: null, provider: 'JEV', model: 'jev-1.14.0',
+    schemaVersion: 'typesafe-systemone-v1',
+    signals: {
+      relevance: { rawScore: 3.6, normalizedScore: 0.9, confidence: 0.9, probabilities: { 0: 0.01, 1: 0.04, 2: 0.1, 3: 0.55, 4: 0.3 }, legend: { 0: 'low', 1: 'limited', 2: 'medium', 3: 'high', 4: 'very high' } },
+      tone: { rawScore: 3.8, normalizedScore: 0.95, confidence: 0.95, probabilities: { 0: 0.01, 1: 0.02, 2: 0.02, 3: 0.2, 4: 0.75 }, legend: { 0: 'low', 1: 'limited', 2: 'medium', 3: 'high', 4: 'very high' } },
+      helpfulness: { rawScore: 3.6, normalizedScore: 0.9, confidence: 0.9, probabilities: { 0: 0.01, 1: 0.04, 2: 0.1, 3: 0.55, 4: 0.3 }, legend: { 0: 'low', 1: 'limited', 2: 'medium', 3: 'high', 4: 'very high' } },
+      factualRisk: { probability: 0.1 },
+      toxicityRisk: { probability: 0.05 },
+      hallucinationRisk: { probability: 0.1 },
+      publishRecommendation: { confidence: 0.9, probabilities: { APPROVE: 0.9, REVIEW: 0.08, REJECT: 0.02 } },
+    },
+    usage: { inputTokens: 132, outputTokens: 48 },
+  };
 
-  const recorded = await workflow.recordResponseEvaluation.execute({ accountId, externalCommentId: commentId, revisionEventId: edited.id, evaluation });
+  const verifiedReleaseScheduleSnapshot = { status: 'UNCONFIGURED', schedule: null };
+  const recorded = await workflow.recordResponseEvaluation.execute({
+    accountId,
+    externalCommentId: commentId,
+    revisionEventId: edited.id,
+    evaluation,
+    verifiedReleaseScheduleSnapshot,
+  });
   assert.equal(recorded.eventType, 'RESPONSE_EVALUATED');
   assert.equal(recorded.parentEventId, edited.id);
   assert.equal(recorded.payload.revisionEventId, edited.id);
   assert.deepEqual(recorded.payload.evaluation, evaluation);
+  assert.deepEqual(recorded.payload.verifiedReleaseScheduleSnapshot, verifiedReleaseScheduleSnapshot);
 
   const nextRevision = await workflow.reviseSuggestion.execute({ accountId, externalCommentId: commentId, suggestionEventId: generated.id, previousRevisionId: edited.id, text: 'Changed again' });
   await assert.rejects(workflow.recordResponseEvaluation.execute({ accountId, externalCommentId: commentId, revisionEventId: edited.id, evaluation }), /RESPONSE_EVALUATION_REVISION_STALE/);
@@ -212,6 +278,148 @@ test('RecordResponseEvaluation rejects invalid risk output without appending an 
   const generated = await workflow.recordSuggestion.execute({ accountId, externalCommentId: commentId, suggestion: { text: 'Generated', language: 'pt-BR', intendedTone: 'FRIENDLY', provider: 'generator', model: 'model', confidence: 0.8, rationale: null } });
   const invalid = { relevance: 0.9, tone: 0.95, helpfulness: 0.9, factualRisk: 1.1, toxicityRisk: 0, hallucinationRisk: 0, publishRecommendation: 'APPROVE', confidence: 0.9, rationale: null, provider: 'JEV', model: 'test-model', schemaVersion: '1' };
   await assert.rejects(workflow.recordResponseEvaluation.execute({ accountId, externalCommentId: commentId, revisionEventId: generated.id, evaluation: invalid }), /RESPONSE_EVALUATION_INVALID/);
+  assert.equal(workflow.events.some((event) => event.eventType === 'RESPONSE_EVALUATED'), false);
+});
+
+test('RecordResponseEvaluation rejects an out-of-range schedule consistency probability', async () => {
+  const workflow = createWorkflow();
+  const generated = await workflow.recordSuggestion.execute({
+    accountId,
+    externalCommentId: commentId,
+    suggestion: { text: 'Generated', language: 'en-US', intendedTone: 'FRIENDLY', provider: 'generator', model: 'model', confidence: 0.8, rationale: null },
+  });
+  const invalid = {
+    relevance: 0.9,
+    tone: 0.9,
+    helpfulness: 0.9,
+    factualRisk: 0.1,
+    toxicityRisk: 0.1,
+    hallucinationRisk: 0.1,
+    scheduleConsistency: 1.1,
+    publishRecommendation: 'REVIEW',
+    confidence: 0.9,
+    rationale: null,
+    provider: 'JEV',
+    model: 'jev-1.14.0',
+    schemaVersion: 'typesafe-systemone-v2',
+  };
+
+  await assert.rejects(
+    workflow.recordResponseEvaluation.execute({
+      accountId,
+      externalCommentId: commentId,
+      revisionEventId: generated.id,
+      evaluation: invalid,
+    }),
+    /RESPONSE_EVALUATION_INVALID/,
+  );
+  assert.equal(workflow.events.some((event) => event.eventType === 'RESPONSE_EVALUATED'), false);
+});
+
+test('RecordResponseEvaluation preserves matching Noul evidence only with the active schedule snapshot', async () => {
+  const workflow = createWorkflow();
+  const generated = await workflow.recordSuggestion.execute({
+    accountId,
+    externalCommentId: commentId,
+    suggestion: { text: 'Generated', language: 'en-US', intendedTone: 'FRIENDLY', provider: 'generator', model: 'model', confidence: 0.8, rationale: null },
+  });
+  const scoreSignal = {
+    rawScore: 4,
+    normalizedScore: 1,
+    confidence: 1,
+    probabilities: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 1 },
+    legend: { 0: 'low', 1: 'limited', 2: 'medium', 3: 'high', 4: 'very high' },
+  };
+  const evaluation = {
+    relevance: 1,
+    tone: 1,
+    helpfulness: 1,
+    factualRisk: 0,
+    toxicityRisk: 0,
+    hallucinationRisk: 0,
+    scheduleConsistency: 0.8,
+    publishRecommendation: 'APPROVE',
+    confidence: 1,
+    rationale: null,
+    provider: 'JEV',
+    model: 'jev-1.14.0',
+    schemaVersion: 'typesafe-systemone-v2',
+    signals: {
+      relevance: scoreSignal,
+      tone: scoreSignal,
+      helpfulness: scoreSignal,
+      factualRisk: { probability: 0 },
+      toxicityRisk: { probability: 0 },
+      hallucinationRisk: { probability: 0 },
+      scheduleConsistency: { probability: 0.8 },
+      publishRecommendation: { confidence: 1, probabilities: { APPROVE: 1 } },
+    },
+  };
+  const verifiedReleaseScheduleSnapshot = {
+    status: 'ACTIVE',
+    source: 'TENANT',
+    schedule: {
+      enabled: true,
+      daysOfWeek: ['WEDNESDAY'],
+      localTime: '20:30',
+      timeZone: 'America/Sao_Paulo',
+      version: 3,
+      updatedAt: '2026-10-13T12:00:00.000Z',
+      confirmedAt: '2026-10-13T12:00:00.000Z',
+    },
+  };
+
+  const recorded = await workflow.recordResponseEvaluation.execute({
+    accountId,
+    externalCommentId: commentId,
+    revisionEventId: generated.id,
+    evaluation,
+    verifiedReleaseScheduleSnapshot,
+  });
+
+  assert.deepEqual(recorded.payload.evaluation.signals.scheduleConsistency, { probability: 0.8 });
+  assert.deepEqual(recorded.payload.verifiedReleaseScheduleSnapshot, verifiedReleaseScheduleSnapshot);
+
+  await assert.rejects(
+    workflow.recordResponseEvaluation.execute({
+      accountId,
+      externalCommentId: commentId,
+      revisionEventId: generated.id,
+      evaluation,
+    }),
+    /RESPONSE_EVALUATION_INVALID/,
+  );
+  await assert.rejects(
+    workflow.recordResponseEvaluation.execute({
+      accountId,
+      externalCommentId: commentId,
+      revisionEventId: generated.id,
+      evaluation: { ...evaluation, scheduleConsistency: 0.7 },
+      verifiedReleaseScheduleSnapshot,
+    }),
+    /RESPONSE_EVALUATION_INVALID/,
+  );
+});
+
+test('RecordResponseEvaluation rejects invalid per-question signal evidence', async () => {
+  const workflow = createWorkflow();
+  const generated = await workflow.recordSuggestion.execute({ accountId, externalCommentId: commentId, suggestion: { text: 'Generated', language: 'pt-BR', intendedTone: 'FRIENDLY', provider: 'generator', model: 'model', confidence: 0.8, rationale: null } });
+  const invalid = {
+    relevance: 0.9, tone: 0.95, helpfulness: 0.9, factualRisk: 0.1, toxicityRisk: 0.05, hallucinationRisk: 0.1,
+    publishRecommendation: 'APPROVE', confidence: 0.9, rationale: null, provider: 'JEV', model: 'jev-1.14.0', schemaVersion: 'typesafe-systemone-v1',
+    signals: {
+      relevance: { rawScore: 4, normalizedScore: 0.2, confidence: 0.9, probabilities: { 0: 1 }, legend: { 0: 'highest' } },
+      tone: { rawScore: 4, normalizedScore: 1, confidence: 0.9, probabilities: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 1 }, legend: { 0: 'low', 1: 'limited', 2: 'medium', 3: 'high', 4: 'very high' } },
+      helpfulness: { rawScore: 4, normalizedScore: 1, confidence: 0.9, probabilities: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 1 }, legend: { 0: 'low', 1: 'limited', 2: 'medium', 3: 'high', 4: 'very high' } },
+      factualRisk: { probability: 0.1 }, toxicityRisk: { probability: 0.05 }, hallucinationRisk: { probability: 0.1 },
+      publishRecommendation: { confidence: 0.9, probabilities: { APPROVE: 1 } },
+    },
+  };
+
+  await assert.rejects(
+    workflow.recordResponseEvaluation.execute({ accountId, externalCommentId: commentId, revisionEventId: generated.id, evaluation: invalid }),
+    /RESPONSE_EVALUATION_INVALID/,
+  );
   assert.equal(workflow.events.some((event) => event.eventType === 'RESPONSE_EVALUATED'), false);
 });
 

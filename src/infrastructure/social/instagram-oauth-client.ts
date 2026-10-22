@@ -5,12 +5,14 @@ import { InstagramOAuthError } from '../../application/social/instagram-oauth-er
 
 export type InstagramOAuthEnvironment = Readonly<Record<string, string | undefined>>;
 
-interface InstagramShortTokenResponse {
-  readonly data?: readonly {
-    readonly access_token?: unknown;
-    readonly user_id?: unknown;
-    readonly permissions?: unknown;
-  }[];
+interface InstagramShortTokenEntry {
+  readonly access_token?: unknown;
+  readonly user_id?: unknown;
+  readonly permissions?: unknown;
+}
+
+interface InstagramShortTokenResponse extends InstagramShortTokenEntry {
+  readonly data?: readonly InstagramShortTokenEntry[];
 }
 
 interface InstagramTokenResponse {
@@ -19,9 +21,14 @@ interface InstagramTokenResponse {
   readonly expires_in?: unknown;
 }
 
-interface InstagramUserResponse {
+interface InstagramUserEntry {
   readonly id?: unknown;
+  readonly user_id?: unknown;
   readonly username?: unknown;
+}
+
+interface InstagramUserResponse extends InstagramUserEntry {
+  readonly data?: readonly InstagramUserEntry[];
 }
 
 interface OAuthConfiguration {
@@ -91,7 +98,7 @@ export class InstagramOAuthClient implements InstagramOAuthProvider {
     return this.validateLongToken(payload, 'INSTAGRAM_OAUTH_TOKEN_REFRESH_FAILED');
   }
 
-  private async exchangeCode(config: OAuthConfiguration, code: string): Promise<{ accessToken: string; userId: string; permissions: string }> {
+  private async exchangeCode(config: OAuthConfiguration, code: string): Promise<{ accessToken: string; userId: string; permissions: string | string[] }> {
     const body = new FormData();
     body.set('client_id', config.clientId);
     body.set('client_secret', config.clientSecret as string);
@@ -105,18 +112,39 @@ export class InstagramOAuthClient implements InstagramOAuthProvider {
       throw new InstagramOAuthError('INSTAGRAM_OAUTH_PROVIDER_UNAVAILABLE');
     }
     if (!response.ok) throw new InstagramOAuthError('INSTAGRAM_OAUTH_TOKEN_EXCHANGE_FAILED');
-    const payload = await this.parseJson<InstagramShortTokenResponse>(response, 'INSTAGRAM_OAUTH_RESPONSE_INVALID');
-    const token = payload.data?.length === 1 ? payload.data[0] : undefined;
-    if (typeof token?.access_token !== 'string' || !token.access_token.trim()
-      || (typeof token.user_id !== 'string' && typeof token.user_id !== 'number') || !String(token.user_id).trim()
-      || typeof token.permissions !== 'string') {
+    const payload = await this.parseJsonPreservingIds<InstagramShortTokenResponse>(response);
+    const token = this.singleEntry<InstagramShortTokenEntry>(payload, ['access_token', 'user_id', 'permissions']);
+    const userId = this.normalizeId(token.user_id);
+    if (typeof token.access_token !== 'string' || !token.access_token.trim()
+      || !userId || !this.isPermissionsList(token.permissions)) {
       throw new InstagramOAuthError('INSTAGRAM_OAUTH_RESPONSE_INVALID');
     }
-    return { accessToken: token.access_token, userId: String(token.user_id), permissions: token.permissions };
+    return { accessToken: token.access_token, userId, permissions: token.permissions };
   }
 
-  private parseGrantedScopes(value: string): readonly string[] {
-    return [...new Set(value.split(',').map((scope) => scope.trim()).filter(Boolean))];
+  private singleEntry<TEntry>(payload: { readonly data?: readonly TEntry[] } & TEntry, flatKeys: readonly (keyof TEntry)[]): TEntry {
+    const flat = flatKeys.some((key) => typeof payload[key] !== 'undefined');
+    if (flat && typeof payload.data !== 'undefined') throw new InstagramOAuthError('INSTAGRAM_OAUTH_RESPONSE_INVALID');
+    if (typeof payload.data !== 'undefined') {
+      if (payload.data.length !== 1) throw new InstagramOAuthError('INSTAGRAM_OAUTH_RESPONSE_INVALID');
+      return payload.data[0];
+    }
+    return payload;
+  }
+
+  private normalizeId(value: unknown): string | undefined {
+    if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+    const id = String(value).trim();
+    return id || undefined;
+  }
+
+  private isPermissionsList(value: unknown): value is string | string[] {
+    return typeof value === 'string' || (Array.isArray(value) && value.every((item) => typeof item === 'string'));
+  }
+
+  private parseGrantedScopes(value: string | string[]): readonly string[] {
+    const items = typeof value === 'string' ? value.split(',') : value;
+    return [...new Set(items.map((scope) => scope.trim()).filter(Boolean))];
   }
 
   private async exchangeLongLivedToken(config: OAuthConfiguration, accessToken: string): Promise<{ accessToken: string; expiresAt: string }> {
@@ -147,7 +175,7 @@ export class InstagramOAuthClient implements InstagramOAuthProvider {
   private async findAuthorizedAccount(accessToken: string, expectedId: string): Promise<Omit<InstagramAuthorizedAccount, 'credentialReference'>> {
     const version = this.graphApiVersion();
     const url = new URL(`https://graph.instagram.com/${version}/me`);
-    url.searchParams.set('fields', 'id,username');
+    url.searchParams.set('fields', 'id,user_id,username');
     let response: globalThis.Response;
     try {
       response = await this.fetcher(url.toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
@@ -155,12 +183,31 @@ export class InstagramOAuthClient implements InstagramOAuthProvider {
       throw new InstagramOAuthError('INSTAGRAM_OAUTH_PROVIDER_UNAVAILABLE');
     }
     if (!response.ok) throw new InstagramOAuthError('INSTAGRAM_OAUTH_PROVIDER_UNAVAILABLE');
-    const payload = await this.parseJson<InstagramUserResponse>(response, 'INSTAGRAM_OAUTH_RESPONSE_INVALID');
-    if (typeof payload.id !== 'string' || !payload.id.trim() || typeof payload.username !== 'string' || !payload.username.trim()) {
+    const payload = await this.parseJsonPreservingIds<InstagramUserResponse>(response);
+    const user = this.singleEntry<InstagramUserEntry>(payload, ['id', 'user_id', 'username']);
+    const professionalId = this.normalizeId(user.user_id);
+    if (!professionalId || typeof user.username !== 'string' || !user.username.trim()) {
       throw new InstagramOAuthError('INSTAGRAM_OAUTH_ACCOUNT_INVALID');
     }
-    if (payload.id !== expectedId) throw new InstagramOAuthError('INSTAGRAM_OAUTH_ACCOUNT_ID_MISMATCH');
-    return { externalAccountId: payload.id, displayName: payload.username };
+    const appScopedId = this.normalizeId(user.id);
+    if (expectedId !== professionalId && expectedId !== appScopedId) {
+      throw new InstagramOAuthError('INSTAGRAM_OAUTH_ACCOUNT_ID_MISMATCH');
+    }
+    return { externalAccountId: professionalId, displayName: user.username };
+  }
+
+  private async parseJsonPreservingIds<T>(response: globalThis.Response): Promise<T> {
+    let text: string;
+    try {
+      text = await response.text();
+    } catch {
+      throw new InstagramOAuthError('INSTAGRAM_OAUTH_RESPONSE_INVALID');
+    }
+    try {
+      return JSON.parse(text.replace(/"((?:user_)?id)"\s*:\s*(\d+)/g, '"$1":"$2"')) as T;
+    } catch {
+      throw new InstagramOAuthError('INSTAGRAM_OAUTH_RESPONSE_INVALID');
+    }
   }
 
   private async parseJson<T>(response: globalThis.Response, errorCode: 'INSTAGRAM_OAUTH_RESPONSE_INVALID'): Promise<T> {

@@ -28,6 +28,16 @@ const page = {
     text: 'Great episode',
     createdAt: '2026-10-12T14:00:00Z',
     canReply: true,
+    canLike: false,
+    externalReplyStatus: 'REPLIED',
+  }],
+  creatorReplies: [{
+    platform: 'youtube',
+    externalReplyId: 'reply-1',
+    externalCommentId: 'comment-1',
+    externalPublicationId: 'video-1',
+    text: 'Thank you for watching!',
+    createdAt: '2026-10-12T15:00:00Z',
   }],
   nextCursor: 'next-comments',
 };
@@ -41,7 +51,18 @@ function createUseCase({ foundAccount = account, response = page, readerPlatform
     upsertPage: async (...args) => calls.push({ operation: 'savePage', args }),
     listByPublication: async (...args) => {
       calls.push({ operation: 'listPublication', args });
-      return response.items.map((item) => ({ ...item, externalReplyStatus: item.externalReplyStatus ?? 'UNKNOWN', socialAccountId: account.id, appReplied: false, lastSyncedAt: '2026-10-13T12:00:00.000Z', expiresAt: '2026-11-12T12:00:00.000Z' }));
+      return response.items.map((item) => ({
+        ...item,
+        externalReplyStatus: item.externalReplyStatus ?? 'UNKNOWN',
+        socialAccountId: account.id,
+        appReplied: false,
+        appLiked: false,
+        lastSyncedAt: '2026-10-13T12:00:00.000Z',
+        expiresAt: '2026-11-12T12:00:00.000Z',
+        creatorReplies: (response.creatorReplies ?? [])
+          .filter((reply) => reply.externalCommentId === item.externalCommentId)
+          .map((reply) => ({ ...reply, socialAccountId: account.id, lastSyncedAt: '2026-10-13T12:00:00.000Z' })),
+      }));
     },
   };
   const events = { append: async (event) => { calls.push({ operation: 'audit', event }); return { ...event, id: 'workflow-event-1', expiresAt: '2026-11-12T12:00:00.000Z' }; } };
@@ -61,7 +82,7 @@ test('SyncPublicationComments resolves tenant server-side, preserves provider cu
   assert.deepEqual(calls[2], { operation: 'readComments', args: [account, 'video-1', 'cursor-one'] });
   assert.deepEqual(calls[3], {
     operation: 'savePage',
-    args: [account, 'video-1', [{ ...page.items[0], externalReplyStatus: 'UNKNOWN' }], '2026-10-13T12:00:00.000Z', '2026-11-12T12:00:00.000Z'],
+    args: [account, 'video-1', page.items, '2026-10-13T12:00:00.000Z', '2026-11-12T12:00:00.000Z', page.creatorReplies],
   });
   assert.deepEqual(calls[4], {
     operation: 'listPublication',
@@ -86,8 +107,16 @@ test('SyncPublicationComments resolves tenant server-side, preserves provider cu
   assert.deepEqual(result, {
     account: { id: account.id, platform: 'youtube', externalAccountId: account.externalAccountId, displayName: account.displayName },
     publicationId: 'video-1',
-    ...page,
-    items: [{ ...page.items[0], externalReplyStatus: 'UNKNOWN', socialAccountId: account.id, appReplied: false, lastSyncedAt: '2026-10-13T12:00:00.000Z', expiresAt: '2026-11-12T12:00:00.000Z' }],
+    items: [{
+      ...page.items[0],
+      socialAccountId: account.id,
+      appReplied: false,
+      appLiked: false,
+      lastSyncedAt: '2026-10-13T12:00:00.000Z',
+      expiresAt: '2026-11-12T12:00:00.000Z',
+      creatorReplies: [{ ...page.creatorReplies[0], socialAccountId: account.id, lastSyncedAt: '2026-10-13T12:00:00.000Z' }],
+    }],
+    nextCursor: page.nextCursor,
     synchronizedAt: '2026-10-13T12:00:00.000Z',
     expiresAt: '2026-11-12T12:00:00.000Z',
   });
@@ -127,6 +156,35 @@ test('SyncPublicationComments rejects a comment page associated with another pub
   const { useCase, calls } = createUseCase({ response: invalidPage });
 
   await assert.rejects(useCase.execute({ accountId, publicationId: 'video-1' }), (error) => error instanceof SocialProviderError && error.code === 'SOCIAL_PROVIDER_RESPONSE_INVALID');
+  assert.equal(calls.some((call) => call.operation === 'savePage'), false);
+});
+
+test('SyncPublicationComments accepts a creator reply for a comment loaded on an earlier provider page', async () => {
+  const priorPageReply = { ...page.creatorReplies[0], externalCommentId: 'earlier-comment' };
+  const invalidPage = {
+    items: [],
+    creatorReplies: [priorPageReply],
+    nextCursor: null,
+  };
+  const { useCase, calls } = createUseCase({ response: invalidPage });
+
+  const result = await useCase.execute({ accountId, publicationId: 'video-1' });
+
+  assert.equal(result.items.length, 0);
+  assert.deepEqual(calls.find((call) => call.operation === 'savePage').args[5], [priorPageReply]);
+});
+
+test('SyncPublicationComments rejects a creator reply associated with another publication', async () => {
+  const invalidPage = {
+    ...page,
+    creatorReplies: [{ ...page.creatorReplies[0], externalPublicationId: 'other-video' }],
+  };
+  const { useCase, calls } = createUseCase({ response: invalidPage });
+
+  await assert.rejects(
+    useCase.execute({ accountId, publicationId: 'video-1' }),
+    (error) => error instanceof SocialProviderError && error.code === 'SOCIAL_PROVIDER_RESPONSE_INVALID',
+  );
   assert.equal(calls.some((call) => call.operation === 'savePage'), false);
 });
 

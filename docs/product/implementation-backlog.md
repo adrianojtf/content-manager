@@ -5,7 +5,7 @@
 **Initial task state:** Todo. Update individual tasks to In Progress, Blocked, or Done as work proceeds. An epic dependency means its prerequisite capability is complete, including its E2E task, unless a task-level dependency allows earlier work.
 
 **Product index:** [MVP PRD](prd.md)  
-**Technical specs:** [Content](../specifications/technical-content-management.md) · [Publishing](../specifications/technical-social-publishing.md) · [Analytics](../specifications/technical-analytics.md) · [Community](../specifications/technical-community-management.md) · [Intelligence](../specifications/technical-audience-intelligence.md) · [Localization](../specifications/internationalization.md)
+**Technical specs:** [Content](../specifications/technical-content-management.md) · [Publishing](../specifications/technical-social-publishing.md) · [Social content synchronization](../specifications/technical-social-content-synchronization.md) · [Analytics](../specifications/technical-analytics.md) · [Community](../specifications/technical-community-management.md) · [Intelligence](../specifications/technical-audience-intelligence.md) · [Localization](../specifications/internationalization.md)
 
 ## Execution and Definition of Done
 
@@ -187,6 +187,25 @@ Wire the existing localization foundation into authenticated request context and
 
 **Depends on:** FND-01, FND-02, FND-03, IAM-01, IAM-02, IAM-03, IAM-04, IAM-05, IAM-07.
 
+### FND-05 — Localize the CreatorDesk interface to supported locales
+
+**Status:** In Progress
+
+Complete frontend localization for the supported locales `pt-BR`, `en-US`, and `es-ES`. The local pilot persists the interface language in browser storage; authenticated locale resolution remains owned by FND-04. Keep the interface locale independent from provider wire formats.
+
+**Acceptance criteria**
+
+- [x] The profile settings screen lets the user select `pt-BR`, `en-US`, or `es-ES`; the local pilot persists the selection in browser storage.
+- [ ] Authenticated selection is persisted as the user's locale preference after FND-04 wiring.
+- [ ] The interface resolves locale using the existing precedence: user locale, tenant default, then system default; anonymous `Accept-Language` negotiation follows the localization contract.
+- [x] All user-facing interface text, including validation, empty/loading/error states, accessible labels, and dynamic messages, is translated through semantic keys in all three catalogs.
+- [x] Dates, numbers, and plural forms use the selected locale and explicit timezone policy; API data remains structured and independent of interface locale.
+- [x] AI response suggestions are generated as separate `pt-BR`, `en-US`, and `es-ES` variants regardless of selected interface locale.
+- [x] Automated tests verify catalog key parity, locale selection, interpolation, and representative formatting for all supported locales.
+- [ ] Authenticated locale precedence and `Accept-Language` negotiation are wired through FND-04.
+
+**Depends on:** FND-04, IAM-03.
+
 ### IAM-06 — Build the tenant administration web console (Phase 3)
 
 Build a localized Next.js console for platform-admin tenant provisioning, tenant-owner membership/settings administration, and global response-generation provider/model selection. The model selector is a system-level setting: the pilot API stores it globally now; Phase 3 records the authenticated platform-admin actor.
@@ -292,6 +311,7 @@ Implement connected social account records and capability checks in Phase 1. Imp
 - [x] Social accounts preserve tenant, platform, provider account ID, display name, and an opaque credential reference; raw access/refresh tokens are not columns in the social account table.
 - [x] The Phase 1 pilot tenant is fixed and resolved server-side; account connection accepts no client-supplied tenant ID, and response DTOs omit credential references.
 - [x] Account repository reads/writes are tenant-scoped; duplicate provider identity in a tenant is rejected without leaking another tenant's record.
+- [x] `GET /social/accounts` lists tenant-owned account summaries without credential references or provider reads for profile settings.
 - [x] YouTube, Instagram, Facebook, and TikTok callbacks use independent provider adapters, one-time expiring state, validated scopes/identities, lazy configuration, encrypted vault storage, stable error codes, and persistence-compensation tests.
 - [x] Facebook returns managed Page candidates without tokens and persists only the explicitly selected Page-scoped credential; selection is tenant-bound and single-use.
 - [x] Deterministic HTTP/fetch doubles cover Instagram/Facebook/TikTok authorization, callbacks, token exchange, refresh, Page selection, and vault token rotation; no test calls a provider.
@@ -306,9 +326,9 @@ Implement connected social account records and capability checks in Phase 1. Imp
 
 ### SOC-08 — Implement existing-publication listing
 
-**Status:** In Progress — tenant-scoped aggregation, per-account partial outcomes, encrypted credential-vault composition, and the localhost listing route are implemented. Deterministic publication readers for all four targets are composed. Local Instagram/Facebook/TikTok OAuth connections are wired; the TikTok app-generated URL and live provider access/refresh behavior still require operator configuration and controlled verification.
+**Status:** In Progress — tenant-scoped aggregation, per-account partial outcomes, page-scoped PostgreSQL metadata upserts, idempotent external IDs, account-disconnect cascades, and the localhost listing route are implemented. Deterministic publication readers for all four targets are composed. Local Instagram/Facebook/TikTok OAuth connections are wired; the TikTok app-generated URL and live provider access/refresh behavior still require operator configuration and controlled verification.
 
-Implement a read-only workflow to list existing publications from connected accounts for the Phase 1 community workflow. Normalize results and preserve platform/external identifiers; keep provider pagination and DTOs inside each adapter. This task does not upload or publish content.
+Implement a provider-backed, paginated workflow to list existing publications from connected accounts for the Phase 1 community workflow and persist metadata for every successfully fetched page. Normalize results and preserve platform/external identifiers; keep provider pagination and DTOs inside each adapter. This task does not download, upload, or publish video content. See the [Social Content Synchronization PRD](prds/social-content-synchronization.md) and [technical specification](../specifications/technical-social-content-synchronization.md).
 
 **Acceptance criteria**
 
@@ -316,6 +336,8 @@ Implement a read-only workflow to list existing publications from connected acco
 - [x] A creator can list publications for all connected accounts or page one account through the localhost HTTP route.
 - [x] A creator can navigate from a publication to its persisted comments through the HTTP API, including app/external reply states.
 - [x] Tests cover pagination, partial platform failure, and unsupported read capability with deterministic provider doubles.
+- [x] Successfully fetched pages are upserted by `(tenantId, socialAccountId, externalPublicationId)`; pages not requested by the creator are not backfilled.
+- [x] Publication metadata is isolated by tenant/account and removed by account disconnection; failed reads/writes do not claim a successful synchronization.
 - [ ] End-to-end listing is connected to OAuth-backed accounts and verified on the provider's approved test environment.
 
 **Depends on:** SOC-01, SOC-02, the active-platform read adapters in SOC-04–SOC-06 and COM-12, FND-02. Provider account authorization remains a separate prerequisite for live results.
@@ -520,9 +542,9 @@ Add verified official metric integrations independently per platform, including 
 
 ### COM-01 — Finalize comment and response policies
 
-**Status:** In Progress — manual stage triggers, selected-network sync, per-comment outcomes, persisted app/external reply states, 30-day retention, append-only AI/manual history, and per-comment sends are defined. AI generation requires comment analysis, creator-authored responses do not, and optional response evaluation is advisory. The controlled pilot uses a fixed manual-only communication policy with no numeric risk thresholds or configurable policy schema. Live JEV contract and Google Free-tier data-use acceptance remain open; the frontend exposes evaluation when its analysis/response prerequisites are met.
+**Status:** In Progress — manual stage triggers, selected-network sync, per-comment outcomes, persisted app/external reply states, 30-day retention, append-only AI/manual history, per-comment sends, and a confirmed send-all action for individually approved semi-automatic replies are defined. AI generation requires comment analysis, creator-authored responses do not, and optional response evaluation is advisory. The controlled pilot uses a fixed manual-only communication policy with no numeric risk thresholds or configurable policy schema. TypeSafe account/credit verification and Gemini Free-tier data-use acceptance remain open; the frontend exposes evaluation when its analysis/response prerequisites are met.
 
-The Phase 1 communication policy is fixed for the controlled pilot: no automatic generation or sending; spam/toxicity and response-evaluation results are advisory; only an explicit per-comment send dispatches a saved response after capability/authorization checks. No configurable policy schema or numeric risk threshold is introduced. Every phase is triggered separately by the creator. AI generation requires prior comment analysis; creator-authored text does not. Every generation request supplies an explicit response language independent of UI locale; do not translate source comments implicitly. Every external reply requires an explicit per-comment manual send; no batch/background send. The frontend shows the optional-evaluation action when analysis and a saved response are available.
+The Phase 1 communication policy is fixed for the controlled pilot: no automatic generation or background sending; spam/toxicity and response-evaluation results are advisory; explicit per-comment sends or a separately confirmed send-all of individually approved saved responses dispatch after per-comment capability/authorization checks. No configurable policy schema or numeric risk threshold is introduced. Every phase is triggered separately by the creator. AI generation requires prior comment analysis; creator-authored text does not. Each explicit AI request creates separate `pt-BR`, `en-US`, and `es-ES` variants independent of UI locale; source comments are never translated. The creator selects one saved variant for review, edit, optional evaluation, or manual send. Send-all is serial, stops on a provider rate limit, and never retries an attempted or ambiguous revision.
 
 **Acceptance criteria**
 
@@ -530,16 +552,16 @@ The Phase 1 communication policy is fixed for the controlled pilot: no automatic
 - [x] Phase 1 comments sync on demand and expire 30 days after their last successful sync.
 - [x] Sync, JEV classification, and response generation run at comment, publication, or one selected-network scope, with independent per-comment outcomes; no cross-network all-scope operation is exposed.
 - [x] AI analysis/suggestion artifacts remain immutable; edits and JEV corrections are append-only audit records linked to their originals and expire with comment text after 30 days.
-- [x] Human JEV corrections may change labels and spam/toxicity/engagement scores (0–1) but never overwrite model confidence, rationale, or raw output.
+- [x] Human TypeSafe/Jev corrections may change labels and normalized spam/toxicity/estimated-engagement scores but never overwrite per-question probabilities, confidence, usage, or raw evidence.
 - [x] Response generation is separate from JEV; the pilot API can select an allowlisted Google/OpenAI provider-model pair without storing API keys.
 - [x] Model selection is global to the local pilot now and reserves a nullable admin-user association for Phase 3.
-- [x] Every generation request has an explicit response language independent from UI locale; automatic translation is out of scope.
-- [x] Every Phase 1 reply requires its own deliberate manual send; no batch/background send is allowed.
+- [x] Every generation request creates separate `pt-BR`, `en-US`, and `es-ES` variants independent from UI locale; source-comment translation is out of scope.
+- [x] Every Phase 1 reply requires deliberate creator action; the semi-automatic send-all action includes only individually approved saved versions and has a separate confirmation.
 - [x] Deterministic risk/evaluation behavior and the fixed manual-only creator communication policy are explicit and testable; no score threshold is inferred.
 
 ### COM-02 — Implement normalized comment ingestion
 
-**Status:** Done — content-level and selected-network on-demand sync, tenant-scoped persistence, 30-day retention cleanup, and persisted app/external reply status are implemented. External state is normalized per adapter and remains `UNKNOWN` when it cannot be reliably determined.
+**Status:** Done — content-level and selected-network on-demand sync, tenant-scoped persistence, 30-day retention cleanup, direct creator-reply persistence, and separate app/external reply state are implemented. External state is normalized per adapter and remains `UNKNOWN` when it cannot be reliably determined.
 
 Synchronize comments only after a creator requests one publication/video or all accessible publications on one selected network. Normalize provider data, preserve IDs, upsert by tenant/account/comment identity, persist app reply state and provider external-reply state (`REPLIED`, `NOT_REPLIED`, or `UNKNOWN`), and remove expired rows during sync/read. Do not dispatch AI evaluation from this sync path.
 
@@ -550,6 +572,7 @@ Synchronize comments only after a creator requests one publication/video or all 
 - [x] Comment upserts refresh a 30-day expiration and expired comments are removed on each subsequent sync/read request.
 - [x] Manual network-level sync covers only the selected network and does not perform an all-network sync.
 - [x] App reply status is persisted; external creator reply status is detected only where reliable, otherwise remains `UNKNOWN`.
+- [x] Only direct replies reliably attributed to the connected account owner are persisted; other commenters' and deeper replies are excluded, including when the parent comment was synchronized on an earlier page.
 - [x] The sync use case returns normalized comments/pagination to presentation and leaves analysis/evaluation to COM-06.
 
 **Depends on:** COM-01, SOC-02, FND-02.
@@ -620,29 +643,30 @@ Implement TikTok comment/reply workflows only for authorized Business accounts a
 
 ### COM-06 — Implement versioned comment evaluation
 
-**Status:** In Progress — the application use case, single-comment HTTP route, lazy configurable JEV HTTP adapter, schema/score validation, audit persistence, correction safeguards, and synchronous per-video/selected-network execution are implemented. The live JEV endpoint/auth contract remains pending.
+**Status:** In Progress — the application use case, single-comment HTTP route, TypeSafe System One adapter, typed-answer/score validation, audit persistence, correction safeguards, and synchronous per-video/selected-network execution are implemented. Live smoke testing with the configured TypeSafe account remains opt-in because it consumes credits.
 
-Invoke JEV through `CommentEvaluator`, validate structured output, and persist immutable `CommentAnalysis` artifacts. Persist creator corrections separately; never mutate original JEV output, confidence, or rationale.
+Invoke TypeSafe Jev through `CommentEvaluator`, validate typed answers, preserve per-question probabilities/confidence and token usage, and persist immutable `CommentAnalysis` artifacts. Persist creator corrections separately; never mutate original model evidence.
 
 **Acceptance criteria**
 
-- [x] Tests cover required fields, normalized 0–1 scores, confidence, provenance, and immutable analysis versions.
-- [x] Invalid JEV output does not replace a prior analysis; a failed workflow event records only the stable error code.
-- [x] Human correction appends allowed labels/spam/toxicity/engagement fields while preserving original output/confidence/rationale; corrections include source/time/reason fields.
+- [x] Tests cover Choice/Score/Noul answer validation, normalized 0–1 scores, per-question confidence/probabilities, usage, provenance, and immutable analysis versions.
+- [x] Invalid TypeSafe output does not replace a prior analysis; a failed workflow event records only the stable error code.
+- [x] Human correction appends allowed labels/spam/toxicity/estimated-engagement fields while preserving original probabilities/confidences; corrections include source/time/reason fields.
 - [x] Per-publication and selected-network classification return independent outcomes and partial failures.
-- [x] JEV adapter integration tests use deterministic HTTP doubles and do not require a live JEV endpoint.
+- [x] TypeSafe adapter integration tests use deterministic HTTP doubles and do not make live requests or consume credits.
 
 **Depends on:** COM-02, FND-01, FND-02.
 
 ### COM-07 — Implement editable response suggestions
 
-**Status:** In Progress — Gemini Flash-Lite/OpenAI GPT-6 Luna adapters, persisted provider/model selector, explicit-language per-comment generation after JEV analysis, structured validation, append-only AI suggestion/edit events, selected-platform batches, and creator-authored response roots/edits are implemented. The approved account-scoped tone configurator and provider prompt integration are implemented under COM-13 and exposed by the prototype-based browser screen. Live API keys/data-use acknowledgement remain pending; Phase 1 communication policy is fixed and manual-only.
+**Status:** In Progress — Gemini Flash-Lite/OpenAI GPT-6 Luna adapters, persisted provider/model selector, trilingual per-comment suggestion generation after JEV analysis, structured validation, append-only AI suggestion/edit events, selected-platform batches, and creator-authored response roots/edits are implemented. The approved account-scoped tone configurator and provider prompt integration are implemented under COM-13 and exposed by the prototype-based browser screen. Live provider verification remains pending; Phase 1 communication policy is fixed and manual-only.
 
 AI generation requires a prior JEV comment analysis. Creator-authored response text is an independent path and does not require comment analysis. Keep every response version auditable; append creator edits instead of replacing prior text.
 
 **Acceptance criteria**
 
-- [x] The selected Google/OpenAI model is called only on explicit per-comment requests, with required response language and bounded source context.
+- [x] The selected Google/OpenAI model is called once per supported response language (`pt-BR`, `en-US`, `es-ES`) on explicit per-comment requests with bounded source context.
+- [x] Each language result is separately auditable; one failed language does not discard successful variants.
 - [x] Gemini/OpenAI structured JSON output is schema-validated; missing/malformed/refusal/rate-limit outcomes map to stable errors without exposing provider bodies or keys.
 - [x] `GET/PUT /ai/response-generation/settings` exposes the allowlisted provider/model selector; only provider/model are persisted, never API keys.
 - [x] Gemini/OpenAI keys and model API configuration are lazy; missing settings do not prevent startup.
@@ -656,17 +680,19 @@ AI generation requires a prior JEV comment analysis. Creator-authored response t
 
 ### COM-13 — Configure per-account response tone
 
-**Status:** Done — per-account tone profile API, tenant-scoped persistence, generator prompts, immutable audit snapshots, deterministic tests, and prototype-based frontend controls are implemented.
+**Status:** Done — per-account tone profile API, tenant-scoped persistence, generator prompts, immutable audit snapshots, deterministic tests, and prototype-based frontend controls are implemented. Extended with a tenant-global default: `GET/PUT /social/settings/response-tone`, hierarchical resolution (account → global → Friendly), and scope/inheritance indicators in the frontend.
 
 Expose a creator-managed tone profile separately from the global provider/model selector. Apply the profile only to future explicit AI generation and snapshot it on each generated suggestion event.
 
 **Acceptance criteria**
 
 - [x] `GET/PUT /social/accounts/{accountId}/response-tone` is tenant-scoped and validates account ownership.
+- [x] `GET/PUT /social/settings/response-tone` manages the tenant-global profile; tenant scoping is resolved server-side and never accepted from callers.
+- [x] A saved account profile is a complete replacement of the global profile for that account only; scopes are never merged, and the account `GET` reports the effective source (`ACCOUNT`, `TENANT`, or `DEFAULT`).
 - [x] Primary choices are Friendly, Professional, Casual, and Empathetic; up to two distinct modifiers may be selected from Concise, Warm, and Enthusiastic; optional note is capped at 500 characters.
-- [x] An account with no saved profile uses Friendly with no modifiers/note; profiles do not leak across accounts or tenants.
+- [x] An account with no saved profile uses the tenant-global profile, or Friendly with no modifiers/note when no global profile exists; profiles do not leak across accounts or tenants.
 - [x] Gemini/OpenAI receive the profile as style guidance without overriding accuracy, respectful-response rules, or manual-send controls.
-- [x] Each generated suggestion event snapshots the exact profile used; changing settings does not rewrite old suggestions or creator-authored text.
+- [x] Each generated suggestion event snapshots the exact profile used and its source; changing settings does not rewrite old suggestions or creator-authored text.
 - [x] Unit, persistence, provider-adapter, and HTTP E2E tests use deterministic doubles; startup does not require tone settings or provider keys.
 
 **Depends on:** COM-02, COM-07.
@@ -680,9 +706,10 @@ Implement the prototype's network/account/publication/comment hierarchy and conn
 **Acceptance criteria**
 
 - [x] The responsive screen serves from `/` and loads publications/accounts from the API; it shows loading, empty, unsupported, and error states without fabricated counts or demo comments.
+- [x] Profile settings list connected accounts without provider reads, start configured OAuth flows without collecting secrets, and require explicit Facebook Page selection.
 - [x] Search, reply-state filters, publication expansion, per-publication/network sync, and independent workflow outcomes are connected to the documented API.
-- [x] Comment evaluation, explicit-language suggestion generation, account tone settings, manual/edited response saving, optional response evaluation, and audit history are wired to the corresponding endpoints.
-- [x] Sending requires confirmation, persists unsaved text first, and sends only the saved response-version ID; no batch-send action exists.
+- [x] Comment evaluation, trilingual suggestion generation, account tone settings, manual/edited response saving, optional response evaluation, and audit history are wired to the corresponding endpoints.
+- [x] Individual sending requires confirmation and sends only the saved response-version ID; the semi-automatic dialog separately confirms and sends only individually approved rows through the per-comment route.
 - [x] Frontend API tests use deterministic fetch doubles; static asset delivery is covered without a database or live provider.
 - [x] User-facing interface copy uses semantic localization keys through a `pt-BR` facade; persisted user/tenant locale integration remains deferred to FND-04.
 
@@ -690,7 +717,7 @@ Implement the prototype's network/account/publication/comment hierarchy and conn
 
 ### COM-08 — Implement optional advisory response evaluation
 
-**Status:** In Progress — response evaluation is optional, manually requested, tied to a saved version, and advisory; `APPROVE`, `REVIEW`, and `REJECT` do not block a manual send. The frontend exposes the optional action when prerequisites are met; the live JEV contract remains open.
+**Status:** In Progress — response evaluation is optional, manually requested, tied to a saved version, and advisory; `APPROVE`, `REVIEW`, and `REJECT` do not block a manual send. The frontend exposes the optional action when prerequisites are met; deterministic TypeSafe request/response mapping is implemented, while live credit-backed smoke testing remains opt-in.
 
 Evaluate only when the creator explicitly requests it; validate and persist structured output as an immutable advisory result. Do not auto-evaluate on generation/edit or use any recommendation as a send gate.
 
@@ -705,7 +732,7 @@ Evaluate only when the creator explicitly requests it; validate and persist stru
 
 ### COM-09 — Implement creator decision and supported reply adapters
 
-Persist creator-authored response versions independently of AI suggestions, then dispatch the exact latest saved text only through a verified platform adapter after an explicit per-comment manual-send action. Neither comment analysis nor optional response evaluation is required to send creator-authored text. No batch-send endpoint or background send exists.
+Persist creator-authored response versions independently of AI suggestions, then dispatch the exact latest saved text only through a verified platform adapter after an explicit per-comment send or a final confirmation for the semi-automatic dialog's individually approved rows. Neither comment analysis nor optional response evaluation is required to send creator-authored text. No batch-send endpoint or background send exists.
 
 **Acceptance criteria**
 
@@ -713,6 +740,7 @@ Persist creator-authored response versions independently of AI suggestions, then
 - [x] Capability and account authorization are checked before each reply; response evaluation is advisory and never a send prerequisite/blocker.
 - [x] The fixed Phase 1 manual-only communication policy is enforced; configurable creator policies and numeric risk thresholds are out of scope.
 - [x] Unsupported reply capability makes no provider call; ambiguous attempts remain visible and cannot trigger automatic duplicate sends.
+- [x] The semi-automatic dialog sends only individually approved, saved, reply-capable versions, sequentially through the per-comment route; individual failures do not stop later rows, while a provider rate limit pauses the queue and per-comment outcomes remain visible.
 - [x] The action log records actor source, timestamp, final text/revision, provider attempt/result, and external reply ID when returned.
 - [x] Integration tests cover the implemented YouTube, Instagram, Facebook Pages, and TikTok reply adapters using deterministic doubles.
 
@@ -728,8 +756,8 @@ Exercise comment ingestion through evaluation and response decision with determi
 - [ ] Single-comment, per-publication, and selected-network workflows show separate stage status/results and preserve partial successes without chaining phases.
 - [ ] Human score corrections, creator-authored responses, and AI response edits appear as audit revisions while original JEV/AI artifacts remain unchanged.
 - [ ] AI generation requires comment analysis; creator-authored responses do not. Optional response evaluation is advisory and does not gate the individual manual send.
-- [x] An AI suggestion can be edited; only a deliberate per-comment manual send action can dispatch the latest saved text (covered through the HTTP controller and actual use cases with deterministic repository/JEV/social doubles).
-- [ ] Unsupported replies, app/external reply-status states, and ambiguous outcomes are shown without automatic/batch sends or retries.
+- [x] An AI suggestion can be edited; only a deliberate per-comment send or separately confirmed send-all of approved responses can dispatch the latest saved text.
+- [ ] Unsupported replies, app/external reply-status states, and ambiguous outcomes are shown without automatic retries; send-all excludes unsupported rows and preserves per-comment outcomes.
 
 **Depends on:** SOC-08, COM-03, COM-04, COM-05, COM-06, COM-07, COM-08, COM-09, COM-12, SOC-04, SOC-05, SOC-06, FND-03.
 
@@ -740,7 +768,7 @@ Exercise comment ingestion through evaluation and response decision with determi
 **Acceptance criteria**
 
 - [x] AI/JEV artifacts and creator edits/corrections are distinct linked events; original AI output is never overwritten.
-- [x] JEV corrections allow only labels and normalized spam/toxicity/engagement scores; confidence/rationale remain immutable.
+- [x] TypeSafe/Jev corrections allow only labels and normalized spam/toxicity/estimated-engagement values; original per-question confidence/probabilities and usage remain immutable.
 - [x] AI-generated suggestions, creator-authored roots, and creator edits are separate append-only response versions with actor source and timestamp.
 - [x] Workflow events share the comment's 30-day retention and are removed with it.
 - [x] A tenant-scoped history endpoint returns the audit trail without exposing credentials.
@@ -756,14 +784,14 @@ Exercise comment ingestion through evaluation and response decision with determi
 
 ### AI-01 — Finalize evidence and audit policy
 
-Define minimum evidence volume, evidence windows, historical comparisons, partial-source failure behavior, context limits/provenance, regeneration identity, audit retention, and the language policy for generated insights/recommendations. Distinguish generated content language from UI locale; any presentation translation must be an explicit, auditable behavior, not a mutation of source evidence or stored AI output. Update the specs.
+Define minimum evidence volume, evidence windows, historical comparisons, partial-source failure behavior, context limits/provenance, regeneration identity, and audit retention. The generated-output language policy is decided: insights and recommendations have independent `pt-BR`, `en-US`, and `es-ES` variants, separate from UI locale, preserving evidence and provenance.
 
 **Acceptance criteria**
 
 - [ ] Evidence-period and minimum-volume rules are explicit.
 - [ ] Sparse/conflicting/partial evidence handling is explicit.
 - [ ] Context provenance, regeneration, and audit retention are documented.
-- [ ] Generated-output language is specified separately from interface locale; any translated presentation preserves the original artifact and provenance.
+- [x] Generated-output language is specified separately from interface locale; each of the three generated variants preserves source evidence and provenance.
 
 ### AI-02 — Implement evidence-context assembly
 

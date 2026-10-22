@@ -1,0 +1,16 @@
+services:
+  lan-proxy:
+    image: ${NGINX_IMAGE:-nginx:stable-alpine}
+    container_name: content-manager-lan-proxy
+    network_mode: host
+    restart: "no"
+    environment:
+      LAN_BIND_ADDRESS: ${LAN_BIND_ADDRESS:-0.0.0.0}
+      LAN_HTTP_PORT: ${LAN_HTTP_PORT:-8080}
+      LAN_HTTPS_PORT: ${LAN_HTTPS_PORT:-8443}
+      LAN_PUBLIC_HOST: ${LAN_PUBLIC_HOST:-192.168.15.9}
+      LAN_ALLOWED_CIDR: ${LAN_ALLOWED_CIDR:-192.168.15.0/24}
+      NGINX_ENVSUBST_FILTER: "^(LAN_BIND_ADDRESS|LAN_HTTP_PORT|LAN_HTTPS_PORT|LAN_PUBLIC_HOST|LAN_ALLOWED_CIDR)$"
+    volumes:
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./certs:/etc/nginx/tls:ro

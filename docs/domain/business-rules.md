@@ -48,7 +48,7 @@ BR-AI-002: JEV receives prepared context and must not access persistence or soci
 
 BR-AI-003: AI outputs must be structured and validated.
 
-BR-AI-004: Confidence and rationale must be preserved.
+BR-AI-004: Preserve provider confidence and structured evidence. Preserve rationale when a provider supplies it; TypeSafe Jev does not generate rationale, so its nullable rationale is `null`.
 
 BR-AI-005: AI recommendations do not automatically mutate domain state.
 

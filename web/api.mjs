@@ -1,3 +1,5 @@
+import { defaultPublicationPageSize } from './publication-pagination.mjs';
+
 const encode = encodeURIComponent;
 
 export class CreatorDeskApiError extends Error {
@@ -45,12 +47,29 @@ export class CreatorDeskApi {
     return payload;
   }
 
-  listPublications({ accountId, cursor } = {}) {
+  listPublications({ accountId, cursor, pageSize = defaultPublicationPageSize, platform } = {}) {
     const query = new URLSearchParams();
     if (accountId) query.set('accountId', accountId);
     if (cursor) query.set('cursor', cursor);
-    const suffix = query.size ? `?${query}` : '';
+    query.set('pageSize', String(pageSize));
+    if (platform) query.set('platform', platform);
+    const suffix = `?${query}`;
     return this.request(`/social/publications${suffix}`);
+  }
+
+  listAccounts() {
+    return this.request('/social/accounts');
+  }
+
+  disconnectAccount(accountId) {
+    return this.request(`/social/accounts/${encode(accountId)}`, { method: 'DELETE' });
+  }
+
+  selectFacebookPage(selectionId, pageId) {
+    return this.request('/social/connections/facebook/select', {
+      method: 'POST',
+      body: { selectionId, pageId },
+    });
   }
 
   listComments(accountId, publicationId) {
@@ -62,6 +81,17 @@ export class CreatorDeskApi {
     return this.request(`/social/accounts/${encode(accountId)}/publications/${encode(publicationId)}/comments/sync${query}`, { method: 'POST' });
   }
 
+  getCommentSummary() {
+    return this.request('/social/comments/summary');
+  }
+
+  setCommentLike(accountId, externalCommentId, action) {
+    return this.request(`/social/accounts/${encode(accountId)}/comments/${encode(externalCommentId)}/like`, {
+      method: 'POST',
+      body: { action },
+    });
+  }
+
   syncNetwork(platform) {
     return this.request('/social/workflow-batches', {
       method: 'POST',
@@ -69,14 +99,24 @@ export class CreatorDeskApi {
     });
   }
 
+  runWorkflowBatch(input) {
+    return this.request('/social/workflow-batches', {
+      method: 'POST',
+      body: input,
+    });
+  }
+
   classify(accountId, externalCommentId) {
     return this.request(`/social/accounts/${encode(accountId)}/comments/${encode(externalCommentId)}/classification`, { method: 'POST' });
   }
 
-  generateResponse(accountId, externalCommentId, { language, analysisEventId }) {
+  generateResponse(accountId, externalCommentId, { analysisEventId, toneOverride } = {}) {
     return this.request(`/social/accounts/${encode(accountId)}/comments/${encode(externalCommentId)}/responses/generate`, {
       method: 'POST',
-      body: { language, ...(analysisEventId ? { analysisEventId } : {}) },
+      body: {
+        ...(analysisEventId ? { analysisEventId } : {}),
+        ...(toneOverride ? { toneOverride } : {}),
+      },
     });
   }
 
@@ -118,8 +158,58 @@ export class CreatorDeskApi {
       .then((view) => view?.profile ?? view);
   }
 
+  getToneProfileView(accountId) {
+    return this.request(`/social/accounts/${encode(accountId)}/response-tone`);
+  }
+
   saveToneProfile(accountId, profile) {
     return this.request(`/social/accounts/${encode(accountId)}/response-tone`, { method: 'PUT', body: profile })
       .then((view) => view?.profile ?? view);
+  }
+
+  getGlobalToneProfile() {
+    return this.request('/social/settings/response-tone');
+  }
+
+  saveGlobalToneProfile(profile) {
+    return this.request('/social/settings/response-tone', { method: 'PUT', body: profile });
+  }
+
+  getVerifiedReleaseSchedule(accountId) {
+    return this.request(`/social/accounts/${encode(accountId)}/verified-release-schedule`)
+      .then((view) => view?.schedule ?? null);
+  }
+
+  getVerifiedReleaseScheduleView(accountId) {
+    return this.request(`/social/accounts/${encode(accountId)}/verified-release-schedule`);
+  }
+
+  saveVerifiedReleaseSchedule(accountId, schedule) {
+    return this.request(`/social/accounts/${encode(accountId)}/verified-release-schedule`, { method: 'PUT', body: schedule })
+      .then((view) => view?.schedule ?? null);
+  }
+
+  getGlobalVerifiedReleaseSchedule() {
+    return this.request('/social/settings/verified-release-schedule');
+  }
+
+  saveGlobalVerifiedReleaseSchedule(schedule) {
+    return this.request('/social/settings/verified-release-schedule', { method: 'PUT', body: schedule });
+  }
+
+  getAIProviderAccess() {
+    return this.request('/ai/provider-access');
+  }
+
+  saveAIProviderAccess(settings) {
+    return this.request('/ai/provider-access', { method: 'PUT', body: settings });
+  }
+
+  getResponseGenerationSettings() {
+    return this.request('/ai/response-generation/settings');
+  }
+
+  saveResponseGenerationSettings(selection) {
+    return this.request('/ai/response-generation/settings', { method: 'PUT', body: selection });
   }
 }

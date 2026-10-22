@@ -1,5 +1,5 @@
 import type { SocialCredentialVault } from '../../application/ports/social-credential-vault.port';
-import type { PlatformPublication, PlatformPublicationPage, SocialPublicationReader } from '../../application/ports/social-publication-reader.port';
+import { defaultSocialPublicationPageSize, type PlatformPublication, type PlatformPublicationPage, type SocialPublicationPageSize, type SocialPublicationReader } from '../../application/ports/social-publication-reader.port';
 import { SocialProviderError } from '../../application/social/social-provider-error';
 import type { SocialAccount } from '../../domain/social/social-account';
 import type { TikTokAccountCredentialResolver } from './tiktok-account-credential-resolver';
@@ -34,7 +34,7 @@ export class TikTokBusinessPublicationReader implements SocialPublicationReader 
     private readonly tokenResolver?: Pick<TikTokAccountCredentialResolver, 'resolveAccessToken'>,
   ) {}
 
-  async listPublications(account: SocialAccount, cursor?: string): Promise<PlatformPublicationPage> {
+  async listPublications(account: SocialAccount, cursor?: string, pageSize: SocialPublicationPageSize = defaultSocialPublicationPageSize): Promise<PlatformPublicationPage> {
     if (account.platform !== 'tiktok') throw new SocialProviderError('SOCIAL_ACCOUNT_PLATFORM_UNSUPPORTED');
     if (!await this.credentials.hasScopes(account.tenantId, account.credentialReference, 'tiktok', [tiktokVideoListScope])) {
       throw new SocialProviderError('SOCIAL_ACCOUNT_PERMISSION_DENIED');
@@ -46,6 +46,7 @@ export class TikTokBusinessPublicationReader implements SocialPublicationReader 
     const url = new URL(`${tiktokBusinessApi}/business/video/list/`);
     url.searchParams.set('business_id', account.externalAccountId);
     url.searchParams.set('fields', JSON.stringify(publicationFields));
+    url.searchParams.set('max_count', String(pageSize));
     if (cursor !== undefined) {
       if (!/^\d+$/.test(cursor)) throw new SocialProviderError('SOCIAL_PROVIDER_RESPONSE_INVALID');
       url.searchParams.set('cursor', cursor);

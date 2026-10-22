@@ -6,19 +6,19 @@ Accepted for the MVP foundation. See [architecture](../architecture/internationa
 
 ## Context
 
-This specification established the localization foundation before the IAM work. IAM-02 now provides persisted identity and OIDC authentication, and IAM-03 adds tenant/user preference persistence. The CreatorDesk comments frontend now uses semantic localization keys with its initial `pt-BR` catalog; authenticated locale-context wiring and additional frontend catalogs remain pending.
+This specification established the localization foundation before the IAM work. IAM-02 now provides persisted identity and OIDC authentication, and IAM-03 adds tenant/user preference persistence. The CreatorDesk comments frontend uses semantic localization keys and ships catalogs for `pt-BR`, `en-US`, and `es-ES`; its local-pilot language selector persists the selected UI locale in the browser until authenticated locale-context wiring is available.
 
 ## Scope
 
 - Resolve a supported locale centrally from user, tenant, request negotiation (anonymous only), and system configuration.
-- Provide application-owned translation and formatting contracts, implemented initially using versioned JSON catalogs and Node.js `Intl`.
+- Provide application-owned translation and formatting contracts, implemented with versioned locale catalogs and Node.js `Intl` for formatting.
 - Support locale-specific message lookup, named interpolation, plural forms, dates, numbers, and currency presentation.
 - Define tenant/user preference ownership and UTC/API behavior; IAM-03 persists preferences, while FND-04 wires them into request context.
 
 ## Out of scope
 
 - Implementing tenant/user CRUD or authentication as part of the localization foundation; these are owned by IAM. Per-request NestJS localization middleware remains FND-04.
-- Authenticated frontend locale resolution and non-`pt-BR` community UI catalogs; the prototype-based comments frontend currently uses a semantic `t(key)` facade and the `pt-BR` catalog.
+- Authenticated frontend locale resolution; the local-pilot UI selector is browser-local until FND-04 integrates persisted user/tenant preferences.
 - Runtime catalog editing, external translation services, translation management UI, automatic currency conversion, or business-specific money rounding.
 - Translating technical logs, provider errors, or domain rules.
 
@@ -29,7 +29,7 @@ This specification established the localization foundation before the IAM work. 
 3. Invalid or unsupported user/tenant candidates are skipped. The configured system locale must be supported; invalid configuration fails clearly instead of consulting host locale.
 4. For anonymous requests only, supported `Accept-Language` negotiation is used after any available tenant preference and before system fallback. A persisted user preference always overrides the header.
 5. Locale resolution is centralized; application/domain behavior must not branch on particular locales.
-6. Translation catalogs use semantic keys in JSON. Missing keys fall back to the same key in the system catalog and then to the key itself. A missing/unsupported locale uses the system catalog.
+6. Translation catalogs use semantic keys. Server catalogs use JSON; the static browser frontend may use versioned ES-module catalogs. Missing keys fall back to the same key in the system catalog and then to the key itself. A missing/unsupported locale uses the system catalog.
 7. Translation supports named parameters and plural categories, with a required `other` form. Plural selection is based on locale rules, not business logic.
 8. Date formatting accepts an instant, locale, and explicit timezone. Timezone selection is user timezone, tenant timezone, then UTC. No server-local timezone is used.
 9. Number and currency formatting use locale conventions. Currency is an explicit ISO 4217 code owned by the tenant and is never inferred from locale.

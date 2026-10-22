@@ -1,6 +1,6 @@
 # Technical Specification — Tenant Identity and Access
 
-**Status:** IAM-01 model accepted; IAM-02 generic OIDC verification, local identity lookup, PostgreSQL mapping, and HTTP guards are implemented. IAM-03 preference persistence and IAM-05 authenticated tenant-isolation E2E coverage are implemented. Auth0 deployment values and operational migration/rollback remain open.
+**Status:** IAM-01 model accepted; IAM-02 generic OIDC verification, local identity lookup, PostgreSQL mapping, and HTTP guards are implemented. IAM-03 preference persistence and IAM-05 authenticated tenant-isolation E2E coverage are implemented. The profile exposes a browser-local light/dark appearance preference. Auth0 deployment values and operational migration/rollback remain open.
 
 **Product source:** [MVP PRD](../product/prd.md)  
 **Architecture decision:** [ADR-006 — Tenant Identity and Access](../architecture/decisions/ADR-006-tenant-identity-and-access.md)  
@@ -79,9 +79,18 @@ The console uses the existing localization port. IAM-03 persists tenant/user pre
 
 `Tenant.defaultLocale` and `Tenant.timezone` are nullable and fall back to the configured system locale and UTC. `Tenant.currency` is required, validated as a supported ISO 4217 code, and has no inferred/default value. `User.locale` and `User.timezone` are nullable overrides; User never stores currency. Writes canonicalize supported locale tags, validate IANA timezones, and reject unsupported values; reads continue to use the existing fallback policy. Only `OWNER` may update tenant preferences, while each tenant user may update only their own preferences, with IDs derived from the authenticated principal. The IAM-03 migration is `src/infrastructure/persistence/migrations/003_add_localization_preferences.sql` and must be applied before tenant provisioning.
 
+## 6.1 Profile appearance
+
+- The profile settings screen lets the user select the light or dark appearance for the console.
+- Appearance is applied to the complete console, including profile settings, and takes effect immediately without a reload.
+- The selection is stored in browser `localStorage` for that browser profile; it is not an account/server preference and does not synchronize across devices.
+- A missing or invalid stored value uses light appearance. Only the explicit `light` and `dark` values are accepted.
+- Changing appearance must not change localization, tenant settings, or account data.
+
 ## 7. Verification
 
 - **Unit:** OIDC identity mapping, principal construction, preference validation/canonicalization, and Owner-versus-Member update authorization.
+- **Frontend unit:** appearance selection accepts only light/dark, persists per browser, applies to the document, and defaults to light for missing/invalid storage.
 - **Integration:** OIDC verification against deterministic local signing keys; PostgreSQL-compatible tests for identity and preference reads/writes scoped by tenant.
 - **IAM-05 E2E:** authenticated requests for two tenants cannot read or mutate one another's Content; server-resolved tenant context scopes preference reads, user locale overrides tenant locale, and timezone falls back deterministically. Local signing keys and in-memory identity/persistence doubles are used.
 - **IAM-06 E2E:** platform-admin provisioning and tenant-owner membership actions use deterministic identity-provider doubles.

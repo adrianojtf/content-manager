@@ -1,5 +1,5 @@
 import type { YouTubeAccountCredentialProvider } from '../../application/ports/youtube-account-credential-provider.port';
-import type { PlatformPublication, PlatformPublicationPage, SocialPublicationReader } from '../../application/ports/social-publication-reader.port';
+import { defaultSocialPublicationPageSize, type PlatformPublication, type PlatformPublicationPage, type SocialPublicationPageSize, type SocialPublicationReader } from '../../application/ports/social-publication-reader.port';
 import { SocialProviderError } from '../../application/social/social-provider-error';
 import { YOUTUBE_READ_SCOPE, YOUTUBE_REPLY_SCOPE } from '../../application/ports/youtube-oauth.port';
 import type { SocialAccount } from '../../domain/social/social-account';
@@ -45,7 +45,7 @@ export class YouTubePublicationReader implements SocialPublicationReader {
     private readonly fetcher: typeof fetch = fetch,
   ) {}
 
-  async listPublications(account: SocialAccount, cursor?: string): Promise<PlatformPublicationPage> {
+  async listPublications(account: SocialAccount, cursor?: string, pageSize: SocialPublicationPageSize = defaultSocialPublicationPageSize): Promise<PlatformPublicationPage> {
     if (account.platform !== 'youtube') {
       throw new SocialProviderError('SOCIAL_ACCOUNT_PLATFORM_UNSUPPORTED');
     }
@@ -79,7 +79,7 @@ export class YouTubePublicationReader implements SocialPublicationReader {
     const playlistUrl = new URL(`${youtubeApi}/playlistItems`);
     playlistUrl.searchParams.set('part', 'snippet,contentDetails');
     playlistUrl.searchParams.set('playlistId', uploadsPlaylistId);
-    playlistUrl.searchParams.set('maxResults', '50');
+    playlistUrl.searchParams.set('maxResults', String(pageSize));
     if (cursor) {
       playlistUrl.searchParams.set('pageToken', cursor);
     }
@@ -92,7 +92,9 @@ export class YouTubePublicationReader implements SocialPublicationReader {
     }
 
     return {
-      items: playlist.items.map((item) => this.normalizePublication(item)),
+      items: playlist.items
+        .filter((item) => !this.isDeletedUnavailablePlaceholder(item))
+        .map((item) => this.normalizePublication(item)),
       nextCursor: playlist.nextPageToken || null,
     };
   }
@@ -147,6 +149,14 @@ export class YouTubePublicationReader implements SocialPublicationReader {
       thumbnailUrl: this.optionalText(thumbnail),
       publishedAt: this.optionalText(snippet?.publishedAt),
     };
+  }
+
+  private isDeletedUnavailablePlaceholder(item: YouTubePlaylistItem): boolean {
+    const title = typeof item?.snippet?.title === 'string' ? item.snippet.title.trim().toLowerCase() : '';
+    const description = typeof item?.snippet?.description === 'string'
+      ? item.snippet.description.trim().toLowerCase().replace(/\.$/, '')
+      : '';
+    return title === 'deleted video' && description === 'this video is unavailable';
   }
 
   private optionalText(value: unknown): string | null {

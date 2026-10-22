@@ -1,6 +1,7 @@
 import type { StoredPlatformComment } from './social-comment-repository.port';
 import type { JevCommentAnalysisResult } from './comment-evaluator.port';
 import type { ResponseToneProfile } from './response-tone-settings.repository.port';
+import type { ResponseGenerationScheduleContext } from './verified-release-schedule.repository.port';
 
 export interface GeneratedResponseSuggestion {
   readonly text: string;
@@ -18,6 +19,7 @@ export interface ResponseSuggestionGenerator {
     readonly analysis: JevCommentAnalysisResult;
     readonly language: string;
     readonly toneProfile: ResponseToneProfile;
+    readonly verifiedReleaseSchedule: ResponseGenerationScheduleContext;
     readonly model?: string;
   }): Promise<GeneratedResponseSuggestion>;
 }

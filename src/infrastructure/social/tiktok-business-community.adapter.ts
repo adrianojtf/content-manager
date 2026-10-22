@@ -1,5 +1,5 @@
 import type { SocialCredentialVault } from '../../application/ports/social-credential-vault.port';
-import type { PlatformComment, PlatformCommentPage, PlatformCommentReply, SocialCommentReader, SocialCommentResponder } from '../../application/ports/social-comment.port';
+import type { PlatformComment, PlatformCommentPage, PlatformCommentReply, PlatformCreatorReply, SocialCommentLiker, SocialCommentLikeAction, SocialCommentReader, SocialCommentResponder } from '../../application/ports/social-comment.port';
 import { SocialProviderError } from '../../application/social/social-provider-error';
 import type { SocialAccount } from '../../domain/social/social-account';
 import type { TikTokAccountCredentialResolver } from './tiktok-account-credential-resolver';
@@ -39,7 +39,7 @@ interface TikTokReplyData {
   readonly comment_id?: unknown;
 }
 
-export class TikTokBusinessCommunityAdapter implements SocialCommentReader, SocialCommentResponder {
+export class TikTokBusinessCommunityAdapter implements SocialCommentReader, SocialCommentResponder, SocialCommentLiker {
   constructor(
     private readonly credentials: SocialCredentialVault,
     private readonly fetcher: typeof fetch = fetch,
@@ -63,11 +63,33 @@ export class TikTokBusinessCommunityAdapter implements SocialCommentReader, Soci
       || (payload.cursor !== undefined && typeof payload.cursor !== 'number' && typeof payload.cursor !== 'string')) {
       throw new SocialProviderError('SOCIAL_PROVIDER_RESPONSE_INVALID');
     }
+    if (payload.comments.some((comment) => typeof comment !== 'object' || comment === null)) {
+      throw new SocialProviderError('SOCIAL_PROVIDER_RESPONSE_INVALID');
+    }
     if (payload.has_more && payload.cursor === undefined) {
       throw new SocialProviderError('SOCIAL_PROVIDER_RESPONSE_INVALID');
     }
+    const rootComments = payload.comments.filter((comment) => !this.optionalId(comment.parent_comment_id));
+    const creatorReplies = rootComments.flatMap((comment) => this.normalizeCreatorReplies(publicationId, comment));
+    const creatorReplyIds = new Set(creatorReplies.map((reply) => reply.externalReplyId));
+    const flattenedCreatorReplies = payload.comments.flatMap((comment): PlatformCreatorReply[] => {
+      const parentCommentId = this.optionalId(comment.parent_comment_id);
+      if (!parentCommentId || comment.owner !== true) return [];
+      const reply = this.normalizeCreatorReply(publicationId, parentCommentId, comment);
+      if (!reply || creatorReplyIds.has(reply.externalReplyId)) return [];
+      creatorReplyIds.add(reply.externalReplyId);
+      return [reply];
+    });
+    const allCreatorReplies = [...creatorReplies, ...flattenedCreatorReplies];
+    const repliedCommentIds = new Set(allCreatorReplies.map((reply) => reply.externalCommentId));
     return {
-      items: payload.comments.map((comment) => this.normalizeComment(account, publicationId, comment)),
+      items: rootComments.map((comment) => {
+        const normalized = this.normalizeComment(account, publicationId, comment);
+        return repliedCommentIds.has(normalized.externalCommentId)
+          ? { ...normalized, externalReplyStatus: 'REPLIED' as const }
+          : normalized;
+      }),
+      creatorReplies: allCreatorReplies,
       nextCursor: payload.has_more ? String(payload.cursor) : null,
     };
   }
@@ -109,6 +131,37 @@ export class TikTokBusinessCommunityAdapter implements SocialCommentReader, Soci
     return { platform: 'tiktok', externalReplyId: String(replyId) };
   }
 
+  async setLike(account: SocialAccount, comment: PlatformComment, action: SocialCommentLikeAction): Promise<void> {
+    this.requireTikTokAccount(account);
+    if (comment.platform !== 'tiktok') throw new SocialProviderError('SOCIAL_ACCOUNT_PLATFORM_UNSUPPORTED');
+    if (!comment.canLike) throw new SocialProviderError('SOCIAL_COMMENT_LIKE_UNSUPPORTED');
+    if (action !== 'LIKE' && action !== 'UNLIKE') throw new SocialProviderError('SOCIAL_COMMENT_LIKE_ACTION_INVALID');
+    await this.requireScope(account, TIKTOK_COMMENT_MANAGE_SCOPE);
+    const accessToken = await this.accessToken(account);
+    let response: globalThis.Response;
+    try {
+      response = await this.fetcher(`${tiktokBusinessApi}/business/comment/like/`, {
+        method: 'POST',
+        headers: { 'Access-Token': accessToken, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          business_id: account.externalAccountId,
+          comment_id: comment.externalCommentId,
+          action,
+        }),
+      });
+    } catch {
+      throw new SocialProviderError('SOCIAL_PROVIDER_RESULT_AMBIGUOUS');
+    }
+    if (!response.ok) this.mapWriteError(response.status);
+    let result: TikTokApiResponse<Record<string, unknown>>;
+    try {
+      result = await response.json() as TikTokApiResponse<Record<string, unknown>>;
+    } catch {
+      throw new SocialProviderError('SOCIAL_PROVIDER_RESULT_AMBIGUOUS');
+    }
+    if (result.code !== 0) throw new SocialProviderError('SOCIAL_PROVIDER_REQUEST_FAILED');
+  }
+
   private async requireScope(account: SocialAccount, scope: string): Promise<void> {
     if (!await this.credentials.hasScopes(account.tenantId, account.credentialReference, 'tiktok', [scope])) {
       throw new SocialProviderError('SOCIAL_ACCOUNT_PERMISSION_DENIED');
@@ -147,8 +200,7 @@ export class TikTokBusinessCommunityAdapter implements SocialCommentReader, Soci
     const commentId = this.requiredId(value.comment_id);
     const videoId = this.requiredId(value.video_id);
     if (videoId !== publicationId) throw new SocialProviderError('SOCIAL_PROVIDER_RESPONSE_INVALID');
-    const replyList = value.reply_list;
-    const creatorReplied = Array.isArray(replyList) && replyList.some((reply) => reply.owner === true);
+    const creatorReplied = this.directCreatorReplyValues(commentId, value).some((reply) => reply.owner === true);
     const replyCount = typeof value.reply_count === 'number' ? value.reply_count : null;
     return {
       platform: 'tiktok',
@@ -159,7 +211,45 @@ export class TikTokBusinessCommunityAdapter implements SocialCommentReader, Soci
       text: this.optionalText(value.text),
       createdAt: this.createdAt(value.create_time),
       canReply: value.status === 'PUBLIC' && value.owner !== true,
+      canLike: value.status === 'PUBLIC',
       externalReplyStatus: creatorReplied ? 'REPLIED' : replyCount === 0 ? 'NOT_REPLIED' : 'UNKNOWN',
+    };
+  }
+
+  private normalizeCreatorReplies(publicationId: string, comment: TikTokComment): readonly PlatformCreatorReply[] {
+    const parentCommentId = this.requiredId(comment.comment_id);
+    return this.directCreatorReplyValues(parentCommentId, comment).flatMap((reply) => {
+      if (reply.owner !== true) return [];
+      const normalized = this.normalizeCreatorReply(publicationId, parentCommentId, reply);
+      return normalized ? [normalized] : [];
+    });
+  }
+
+  private directCreatorReplyValues(parentCommentId: string, comment: TikTokComment): readonly TikTokComment[] {
+    if (!Array.isArray(comment.reply_list)) return [];
+    return comment.reply_list.filter((reply) => {
+      if (typeof reply !== 'object' || reply === null) return false;
+      const declaredParent = this.optionalId(reply.parent_comment_id);
+      return !declaredParent || declaredParent === parentCommentId;
+    });
+  }
+
+  private normalizeCreatorReply(publicationId: string, parentCommentId: string, value: TikTokComment): PlatformCreatorReply | null {
+    const externalReplyId = this.optionalId(value.comment_id);
+    if (!externalReplyId) return null;
+    const replyPublicationId = this.optionalId(value.video_id);
+    if (replyPublicationId && replyPublicationId !== publicationId) {
+      throw new SocialProviderError('SOCIAL_PROVIDER_RESPONSE_INVALID');
+    }
+    const declaredParent = this.optionalId(value.parent_comment_id);
+    if (declaredParent && declaredParent !== parentCommentId) return null;
+    return {
+      platform: 'tiktok',
+      externalReplyId,
+      externalCommentId: parentCommentId,
+      externalPublicationId: publicationId,
+      text: this.optionalText(value.text),
+      createdAt: this.createdAt(value.create_time),
     };
   }
 

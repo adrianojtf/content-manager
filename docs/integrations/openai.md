@@ -11,7 +11,7 @@ OpenAI is an optional response-text provider selected through the pilot's provid
 - Use structured JSON output for `text`, `intendedTone`, `confidence`, and `rationale`.
 - Set `store: false`, use `reasoning.effort: none` for the initial concise suggestion workflow, and cap output tokens.
 - The model is chosen from the server allowlist; the browser/API caller cannot supply an arbitrary model on each generation request.
-- API key: `OPENAI_API_KEY`, read only when generation runs, sent in the `Authorization: Bearer` header, never stored in PostgreSQL or returned to the settings API.
+- API key: `OPENAI_API_KEY`, configurable in Preferences with a write-only password field. The saved key is encrypted in PostgreSQL with `SOCIAL_CREDENTIAL_ENCRYPTION_KEY`, read only when generation runs, sent in the `Authorization: Bearer` header, and never returned to the settings API.
 
 ## Model Selection
 
@@ -19,7 +19,7 @@ The local pilot setting allows `google/gemini-3.5-flash-lite` or `openai/gpt-6-l
 
 ## Billing and Data
 
-GPT-6 Luna is billed by input/output token use and does not have the Gemini Free-tier option. The application sends one selected comment, bounded JEV analysis, and explicit response language only after an explicit generation request. Do not log prompt content, API keys, or raw provider error bodies.
+GPT-6 Luna is billed by input/output token use and does not have the Gemini Free-tier option. For each explicit generation action, the application sends one selected comment and bounded JEV analysis in separate calls for `pt-BR`, `en-US`, and `es-ES`; billing applies to all three calls. Do not log prompt content, API keys, or raw provider error bodies.
 
 ## Validation and Failures
 

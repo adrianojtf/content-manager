@@ -45,7 +45,7 @@ test('TikTok Business publication reader normalizes owned videos and preserves c
     },
   })]);
 
-  const page = await reader.listPublications(account, '20');
+  const page = await reader.listPublications(account, '20', 10);
 
   assert.deepEqual(page, {
     items: [{
@@ -58,6 +58,7 @@ test('TikTok Business publication reader normalizes owned videos and preserves c
   assert.equal(requests[0].url.pathname, '/open_api/v1.3/business/video/list/');
   assert.equal(requests[0].url.searchParams.get('business_id'), account.externalAccountId);
   assert.equal(requests[0].url.searchParams.get('cursor'), '20');
+  assert.equal(requests[0].url.searchParams.get('max_count'), '10');
   assert.deepEqual(JSON.parse(requests[0].url.searchParams.get('fields')), ['item_id', 'caption', 'share_url', 'create_time', 'thumbnail_url']);
   assert.equal(requests[0].options.headers['Access-Token'], 'tiktok-test-token');
 });

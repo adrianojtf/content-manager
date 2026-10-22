@@ -1,87 +1,64 @@
-# JEV Integration
+# TypeSafe Jev Integration
 
 ## 1. Role
 
-JEV is the initial provider for comment evaluation, response evaluation and audience/content intelligence. It does not generate response text or make social API calls; response text uses a separate provider capability.
+Jev is TypeSafe's System One decision model. It evaluates a supplied state against typed questions and returns structured answers. It is not a chat/text-generation model and does not call social APIs. Gemini/OpenAI remain the separate text-generation providers.
 
 ## 2. Primary Use Cases
 
 ### Comment Evaluation
 
-Input:
-
-- comment;
-- content metadata;
-- publication/platform;
-- optional author interaction context.
-
-Output:
+State supplied by the current adapter:
 
 ```json
 {
-  "sentiment": "POSITIVE",
-  "emotion": "SURPRISE",
-  "intent": "REACTION",
-  "topic": "CHARACTER",
-  "entity": "JOAO",
-  "spamScore": 0.01,
-  "toxicityScore": 0.01,
-  "engagementValue": 0.82,
-  "confidence": 0.94
+  "comment": { "text": "Original comment text" },
+  "publication": {
+    "platform": "youtube",
+    "externalPublicationId": "external-publication-id"
+  }
 }
 ```
 
-All numeric comment scores (`spamScore`, `toxicityScore`, `engagementValue`, and `confidence`) are normalized to `[0,1]`. The application persists this JEV artifact immutably. Creator corrections to classification labels or the first three scores are separate audit records; they never change JEV confidence, rationale, or original output.
+The `questions` map asks TypeSafe Choice questions for sentiment, emotion, intent, and topic; Noul questions for spam, toxicity, whether answering requires facts absent from the state, and explicit requests for continuation; and a five-level Score question for estimated engagement potential. Choice/Score evidence retains the selected value, probabilities, and confidence. Noul's value is the probability that the answer is yes.
+
+The initial controlled taxonomies are:
+
+- sentiment: `POSITIVE`, `NEUTRAL`, `NEGATIVE`;
+- emotion: `JOY`, `CURIOSITY`, `FRUSTRATION`, `SADNESS`, `ANGER`, `SURPRISE`, `NEUTRAL`, `OTHER`;
+- intent: `QUESTION`, `PRAISE`, `COMPLAINT`, `SUGGESTION`, `CONTENT_REQUEST`, `REACTION`, `OTHER`;
+- topic: `CHARACTER`, `STORY`, `CONTENT`, `PRODUCTION`, `COMMUNITY`, `PLATFORM`, `OTHER`.
+
+Engagement is an estimated potential derived from comment text, not an observed platform metric. TypeSafe's five ordered Score levels produce a raw range `[0,4]`; the adapter normalizes it to `[0,1]` while retaining the raw score, legend, probabilities, and confidence. An explicit request for another part/episode is an engagement signal even when the comment is short; it is separately counted through the Noul `requests_continuation` question and normalized as `continuationRequestProbability` for statistics and response context. No observed likes/replies are included in the current state.
+
+TypeSafe does not extract arbitrary entity text or generate rationale. The current adapter sets `entity` and `rationale` to `null`. The immutable analysis event stores normalized fields, per-question evidence, returned model ID, internal schema version, token usage, and timestamp. Human corrections remain separate append-only events and do not overwrite original TypeSafe evidence.
 
 ### Response Evaluation
 
-Input:
+The state contains the original comment, effective persisted comment analysis (including append-only creator corrections), and exact saved response text. The questions are independent: Score for relevance, tone, and helpfulness; Noul for factual, toxicity, and hallucination risk; and Choice for `APPROVE`, `REVIEW`, or `REJECT`. Score results are normalized to `[0,1]`; Noul results are already probabilities in that range.
 
-- original comment text;
-- exact saved final response revision;
-- effective persisted CommentAnalysis (including append-only creator corrections).
-
-Content context and creator communication policy are not sent in the current pilot adapter because their contracts are not yet defined; no second comment-classification call is made.
-
-Output:
-
-```json
-{
-  "relevance": 0.97,
-  "tone": 0.94,
-  "helpfulness": 0.81,
-  "factualRisk": 0.02,
-  "toxicityRisk": 0.01,
-  "hallucinationRisk": 0.01,
-  "publishRecommendation": "APPROVE",
-  "confidence": 0.95,
-  "rationale": "Response directly addresses the viewer's question."
-}
-```
-
-The evaluation is optional and manually requested. Its recommendation and risk/confidence scores are advisory only: none can trigger or block the creator's separate per-comment manual send.
+`publishRecommendation` is evaluated independently from the other answers and is advisory only. It cannot trigger or block the creator's separate per-comment manual send. TypeSafe does not return rationale text, so the stored `rationale` is `null`.
 
 ### Audience Intelligence
 
-JEV receives aggregated context such as:
+Future audience-intelligence workflows may send aggregated state such as:
 
 - comment classifications;
 - metric snapshots;
 - content metadata;
 - historical performance.
 
-It can identify:
+Typed Jev questions can classify or score:
 
-- recurring topics;
-- characters/themes;
-- audience questions;
-- complaints;
-- engagement opportunities;
-- content opportunities.
+- recurring topic categories;
+- audience question/complaint rates;
+- estimated engagement-potential distributions.
+
+Any narrative insight or free-text content recommendation must be composed by a separate text-generation capability or by deterministic application logic; TypeSafe answers are not prose.
 
 ### Content Recommendation
 
-Example:
+The following is an application-generated example, not a TypeSafe response. TypeSafe does not return free-text recommendations; the application may derive a structured recommendation from typed answers or use a separate generator for narrative wording.
 
 ```json
 {
@@ -98,7 +75,7 @@ Example:
 
 ## 3. Context Boundary
 
-The application prepares context.
+The application prepares and sends the complete state. Jev has no direct database or social-provider access.
 
 JEV never directly queries:
 
@@ -110,30 +87,38 @@ JEV never directly queries:
 ## 4. Adapter
 
 ```text
-Application
+Application use case
     ↓
-CommentEvaluator / ResponseEvaluator / InsightGenerator
+CommentEvaluator / ResponseEvaluator port
     ↓
-JevAdapter
+TypeSafe System One adapter
     ↓
-JEV
+POST https://api.typesafe.ai/v1/systemone
 ```
 
-## 5. Initial HTTP Adapter Contract
+## 5. HTTP Contract and Configuration
 
-The repository does not contain JEV endpoint/authentication details. The comment adapter accepts `JEV_COMMENT_EVALUATION_URL` as a complete HTTPS (or localhost test) endpoint. The separate response adapter accepts `JEV_RESPONSE_EVALUATION_URL`; it sends the comment, effective persisted `CommentAnalysis`, and exact saved response text, and expects the structured Response Evaluation fields above. Neither adapter guesses a provider host/path. Both attach provenance, validate normalized output, and are separated by application ports so provider wire contracts do not enter use cases.
+TypeSafe exposes one evaluation endpoint; the application does not create separate comment/response APIs or require custom URLs:
 
-`JEV_API_KEY` is optional and shared by these adapters. If provided, it is sent only in a configurable header (`JEV_API_KEY_HEADER`, default `Authorization`; `JEV_API_KEY_PREFIX`, default `Bearer`). Endpoint and credentials are read lazily when an evaluation executes, not at application startup. Live integration remains unverified until the operator supplies each actual URL and confirms the request/auth/schema contract.
+```http
+POST https://api.typesafe.ai/v1/systemone
+Authorization: Bearer <API_KEY>
+Content-Type: application/json
+```
 
-## 6. Validation
+Each request body has `model`, `state`, and `questions`. The pilot uses `model: "jev-latest"`. Comment classification and response evaluation use the same endpoint with different states and question maps. Responses contain `model`, nested `answers`, and `usage`; each answer's fields depend on its question type. See the [TypeSafe API reference](https://docs.typesafe.ai/api), [Choice](https://docs.typesafe.ai/primitives/choice), [Score](https://docs.typesafe.ai/primitives/score), and [Noul](https://docs.typesafe.ai/primitives/noul).
+
+Preferences stores one write-only API key; reads return only a configured flag. Saved credentials are encrypted with `SOCIAL_CREDENTIAL_ENCRYPTION_KEY`. Runtime configuration prefers saved credentials, then `TYPESAFE_API_KEY`, with `JEV_API_KEY` retained as a legacy fallback. The API URL, model, auth header, and prefix are not user-configurable in the direct TypeSafe integration. Credentials are resolved lazily when an evaluation executes.
+
+## 6. Validation and Error Handling
 
 The application validates:
 
-- schema;
-- required fields;
-- confidence range;
-- allowed classifications;
-- response risk;
-- recommendation structure.
+- the TypeSafe response envelope and each required question answer;
+- Choice values/probabilities/confidence against the configured taxonomy;
+- Score values, rubric bounds, probabilities, and confidence before normalization;
+- Noul probabilities in `[0,1]`;
+- non-negative usage counters when supplied;
+- response recommendation membership in `APPROVE`, `REVIEW`, or `REJECT`.
 
-Invalid output must not mutate domain state.
+Invalid output must not append a successful analysis/evaluation or replace prior artifacts. TypeSafe 401 maps to authorization failure, 429 to rate limiting, 529/5xx to provider unavailability, and invalid request/answer payloads to stable provider errors. The HTTP boundary is exercised with deterministic mocks; live TypeSafe calls are opt-in because they consume account credits.

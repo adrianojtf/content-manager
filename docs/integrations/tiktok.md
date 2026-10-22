@@ -6,7 +6,7 @@ P3
 
 ## MVP Target
 
-TikTok Business accounts and comments/replies for owned organic videos through TikTok API for Business. TikTok Research API is not the commercial product integration path. The OAuth connection is implemented but remains inactive until the app-generated authorization URL and runtime credentials are configured.
+TikTok Business accounts and comments/replies/likes for owned organic videos through TikTok API for Business. TikTok Research API is not the commercial product integration path. The OAuth connection is implemented but remains inactive until the app-generated authorization URL and runtime credentials are configured.
 
 ## Local OAuth Connection
 
@@ -38,6 +38,7 @@ The provided `developers.tiktok.com` docs are a separate product family: Display
 - [Revoke a short-term access token](https://business-api.tiktok.com/portal/docs/revoke-a-short-term-access-token/v1.3) — TikTok account-token revoke contract; not currently invoked by this application.
 - [Business API authentication](https://business-api.tiktok.com/portal/docs/authentication/v1.3)
 - [Manage comments on owned TikTok videos](https://business-api.tiktok.com/portal/docs/manage-comments-on-owned-tiktok-videos/v1.3)
+- [Like/unlike an owned-video comment](https://business-api.tiktok.com/portal/docs?id=1762228456608770) — `POST /open_api/v1.3/business/comment/like/` accepts `business_id`, `comment_id`, and `action` (`LIKE` or `UNLIKE`); comment-management access is required.
 - [TikTok for Developers Login Kit for Web](https://developers.tiktok.com/doc/login-kit-web)
 - [TikTok for Developers scopes reference](https://developers.tiktok.com/doc/tiktok-api-scopes)
 - [Display API overview](https://developers.tiktok.com/doc/display-api-overview) and [video list endpoint](https://developers.tiktok.com/doc/tiktok-api-v2-video-list) — `video.list` is for public video metadata.

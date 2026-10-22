@@ -1,13 +1,19 @@
 import type { CommentWorkflowEvent, CommentWorkflowEventRepository } from '../ports/comment-workflow-event-repository.port';
-import type { JevCommentAnalysisResult } from '../ports/comment-evaluator.port';
+import type {
+  JevCommentAnalysisResult,
+  JevProviderUsage,
+  JevScoreSignal,
+} from '../ports/comment-evaluator.port';
 import type { GeneratedResponseSuggestion } from '../ports/response-suggestion-generator.port';
 import type { ResponseToneProfile } from '../ports/response-tone-settings.repository.port';
-import { defaultResponseToneProfile, isValidResponseToneProfile } from './response-tone-settings';
+import type { VerifiedReleaseScheduleSnapshot } from '../ports/verified-release-schedule.repository.port';
+import { defaultResponseToneProfile, isValidResponseToneProfile, type ResponseToneProfileSource } from './response-tone-settings';
 import type { SocialAccountRepository } from '../ports/social-account-repository.port';
 import type { PilotTenantContext } from '../ports/pilot-tenant-context.port';
 import { parseSocialAccountId } from '../../domain/social/social-account-id';
 import { CommentWorkflowAuditError } from './comment-workflow-audit-error';
 import { SocialProviderError } from './social-provider-error';
+import { isValidStoredVerifiedReleaseSchedule } from '../../domain/social/verified-release-schedule';
 
 export function isValidJevCommentAnalysisResult(value: unknown): value is JevCommentAnalysisResult {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -19,7 +25,94 @@ export function isValidJevCommentAnalysisResult(value: unknown): value is JevCom
   return !labels.some((label) => typeof label !== 'string' || !label.trim())
     && (analysis.entity === null || (typeof analysis.entity === 'string' && Boolean(analysis.entity.trim())))
     && !scores.some((score) => typeof score !== 'number' || !Number.isFinite(score) || score < 0 || score > 1)
-    && (analysis.rationale === null || typeof analysis.rationale === 'string');
+    && (analysis.continuationRequestProbability === undefined || isUnitScore(analysis.continuationRequestProbability))
+    && (analysis.rationale === null || typeof analysis.rationale === 'string')
+    && (analysis.signals === undefined || isValidCommentAnalysisSignals(analysis.signals))
+    && (analysis.usage === undefined || analysis.usage === null || isValidProviderUsage(analysis.usage));
+}
+
+function isValidCommentAnalysisSignals(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return isValidChoiceSignal(value.sentiment)
+    && isValidChoiceSignal(value.emotion)
+    && isValidChoiceSignal(value.intent)
+    && isValidChoiceSignal(value.topic)
+    && isValidNoulSignal(value.spam)
+    && isValidNoulSignal(value.toxicity)
+    && isValidScoreSignal(value.engagement)
+    && isValidNoulSignal(value.needsExternalFacts)
+    && isValidNoulSignal(value.requestsContinuation);
+}
+
+function isValidResponseEvaluationSignals(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return isValidScoreSignal(value.relevance)
+    && isValidScoreSignal(value.tone)
+    && isValidScoreSignal(value.helpfulness)
+    && isValidNoulSignal(value.factualRisk)
+    && isValidNoulSignal(value.toxicityRisk)
+    && isValidNoulSignal(value.hallucinationRisk)
+    && (value.scheduleConsistency === undefined || isValidNoulSignal(value.scheduleConsistency))
+    && isValidChoiceSignal(value.publishRecommendation);
+}
+
+function isValidVerifiedReleaseScheduleSnapshot(value: unknown): value is VerifiedReleaseScheduleSnapshot {
+  if (!isRecord(value)) return false;
+  if (value.status === 'UNCONFIGURED') return value.schedule === null;
+  return (value.status === 'ACTIVE' || value.status === 'DISABLED')
+    && (value.source === 'ACCOUNT' || value.source === 'TENANT')
+    && isValidStoredVerifiedReleaseSchedule(value.schedule)
+    && (value.status === 'ACTIVE' ? value.schedule.enabled : !value.schedule.enabled);
+}
+
+function isValidChoiceSignal(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return isUnitScore(value.confidence) && isProbabilityMap(value.probabilities);
+}
+
+function isValidScoreSignal(value: unknown): value is JevScoreSignal {
+  if (!isRecord(value)) return false;
+  const probabilities = value.probabilities;
+  const legend = value.legend;
+  if (typeof value.rawScore !== 'number' || !Number.isFinite(value.rawScore) || value.rawScore < 0 || value.rawScore > 4
+    || typeof value.normalizedScore !== 'number' || !Number.isFinite(value.normalizedScore) || value.normalizedScore < 0 || value.normalizedScore > 1
+    || Math.abs(value.normalizedScore - value.rawScore / 4) > 1e-9
+    || !isUnitScore(value.confidence)
+    || !isProbabilityMap(probabilities)
+    || !isStringMap(legend)) {
+    return false;
+  }
+  return Object.keys(probabilities).length === 5
+    && Object.keys(legend).length === 5
+    && [0, 1, 2, 3, 4].every((level) => Object.hasOwn(probabilities, String(level)) && Object.hasOwn(legend, String(level)));
+}
+
+function isValidNoulSignal(value: unknown): value is { readonly probability: number } {
+  return isRecord(value) && isUnitScore(value.probability);
+}
+
+function isProbabilityMap(value: unknown): value is Readonly<Record<string, number>> {
+  return isRecord(value) && Object.keys(value).length > 0
+    && Object.values(value).every(isUnitScore);
+}
+
+function isStringMap(value: unknown): value is Readonly<Record<string, string>> {
+  return isRecord(value) && Object.keys(value).length > 0
+    && Object.values(value).every((entry) => typeof entry === 'string' && Boolean(entry.trim()));
+}
+
+function isValidProviderUsage(value: unknown): value is JevProviderUsage {
+  return isRecord(value)
+    && Number.isSafeInteger(value.inputTokens) && (value.inputTokens as number) >= 0
+    && Number.isSafeInteger(value.outputTokens) && (value.outputTokens as number) >= 0;
+}
+
+function isUnitScore(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export interface RecordCommentAnalysisInput {
@@ -43,6 +136,8 @@ export interface RecordResponseSuggestionInput {
   readonly sourceAnalysisEventId?: string | null;
   readonly suggestion: GeneratedResponseSuggestion;
   readonly toneProfile?: ResponseToneProfile;
+  readonly toneProfileSource?: ResponseToneProfileSource;
+  readonly verifiedReleaseScheduleSnapshot?: VerifiedReleaseScheduleSnapshot | null;
   readonly batchOperationId?: string | null;
 }
 
@@ -72,6 +167,7 @@ export interface RecordResponseEvaluationInput {
   readonly externalCommentId: string;
   readonly revisionEventId: string;
   readonly evaluation: Readonly<Record<string, unknown>>;
+  readonly verifiedReleaseScheduleSnapshot?: VerifiedReleaseScheduleSnapshot | null;
 }
 
 export function isResponseVersionEventType(eventType: string): boolean {
@@ -79,6 +175,47 @@ export function isResponseVersionEventType(eventType: string): boolean {
     || eventType === 'RESPONSE_SUGGESTION_EDITED'
     || eventType === 'MANUAL_RESPONSE_CREATED'
     || eventType === 'MANUAL_RESPONSE_EDITED';
+}
+
+export function isLatestResponseVersionForSelection(history: readonly CommentWorkflowEvent[], revisionEventId: string): boolean {
+  const versions = history.filter((event) => isResponseVersionEventType(event.eventType)
+    && event.status !== 'FAILED' && event.status !== 'UNSUPPORTED');
+  const revision = versions.find((event) => event.id === revisionEventId);
+  if (!revision) return false;
+
+  const rootId = responseVersionRootId(revision);
+  if (!rootId) return false;
+  const root = versions.find((event) => event.id === rootId);
+  if (!root) return false;
+
+  const latestInLineage = [...versions].reverse().find((event) => responseVersionRootId(event) === rootId);
+  if (latestInLineage?.id !== revision.id) return false;
+
+  const latestManualVersion = [...versions].reverse().find((event) => isManualResponseEventType(event.eventType));
+  if (root.eventType !== 'RESPONSE_SUGGESTION_GENERATED') {
+    return latestManualVersion?.id === revision.id;
+  }
+
+  const latestSuggestionForLanguage = [...versions].reverse().find((event) => (
+    event.eventType === 'RESPONSE_SUGGESTION_GENERATED'
+    && event.payload.language === root.payload.language
+  ));
+  if (latestSuggestionForLanguage?.id !== root.id) return false;
+  return !latestManualVersion || versions.indexOf(latestManualVersion) < versions.indexOf(revision);
+}
+
+function responseVersionRootId(event: CommentWorkflowEvent): string | null {
+  if (event.eventType === 'RESPONSE_SUGGESTION_GENERATED' || event.eventType === 'MANUAL_RESPONSE_CREATED') {
+    return event.id;
+  }
+  const rootId = event.eventType === 'RESPONSE_SUGGESTION_EDITED'
+    ? event.payload.originalSuggestionEventId
+    : event.payload.originalManualResponseEventId;
+  return typeof rootId === 'string' ? rootId : null;
+}
+
+function isManualResponseEventType(eventType: string): boolean {
+  return eventType === 'MANUAL_RESPONSE_CREATED' || eventType === 'MANUAL_RESPONSE_EDITED';
 }
 
 export interface CommentWorkflowHistoryInput {
@@ -186,6 +323,15 @@ export class RecordResponseSuggestion {
     this.validateSuggestion(input.suggestion);
     const toneProfile = input.toneProfile ?? defaultResponseToneProfile;
     if (!isValidResponseToneProfile(toneProfile)) throw new CommentWorkflowAuditError('RESPONSE_SUGGESTION_INVALID');
+    if (input.toneProfileSource !== undefined
+      && input.toneProfileSource !== 'ACCOUNT' && input.toneProfileSource !== 'TENANT' && input.toneProfileSource !== 'DEFAULT') {
+      throw new CommentWorkflowAuditError('RESPONSE_SUGGESTION_INVALID');
+    }
+    if (input.verifiedReleaseScheduleSnapshot !== undefined
+      && input.verifiedReleaseScheduleSnapshot !== null
+      && !isValidVerifiedReleaseScheduleSnapshot(input.verifiedReleaseScheduleSnapshot)) {
+      throw new CommentWorkflowAuditError('RESPONSE_SUGGESTION_INVALID');
+    }
     const tenantId = await this.tenant.resolveTenantId();
     const history = await this.events.listByComment(tenantId, input.accountId, input.externalCommentId, new Date(this.now()).toISOString());
     const sourceAnalysis = input.sourceAnalysisEventId
@@ -204,7 +350,12 @@ export class RecordResponseSuggestion {
       operationId: null,
       batchOperationId: input.batchOperationId ?? null,
       parentEventId: sourceAnalysis?.id ?? null,
-      payload: { ...input.suggestion, toneProfile },
+      payload: {
+        ...input.suggestion,
+        toneProfile,
+        ...(input.toneProfileSource !== undefined ? { toneProfileSource: input.toneProfileSource } : {}),
+        verifiedReleaseScheduleSnapshot: input.verifiedReleaseScheduleSnapshot ?? null,
+      },
       recordedAt: new Date(this.now()).toISOString(),
     });
   }
@@ -345,12 +496,12 @@ export class RecordResponseEvaluation {
   ) {}
 
   async execute(input: RecordResponseEvaluationInput): Promise<CommentWorkflowEvent> {
-    this.validateEvaluation(input.evaluation);
+    this.validateEvaluation(input.evaluation, input.verifiedReleaseScheduleSnapshot);
     const tenantId = await this.tenant.resolveTenantId();
     const history = await this.events.listByComment(tenantId, input.accountId, input.externalCommentId, new Date(this.now()).toISOString());
-    const revision = history.find((event) => event.id === input.revisionEventId && isResponseVersionEventType(event.eventType));
-    const currentRevision = history.filter((event) => isResponseVersionEventType(event.eventType)).at(-1);
-    if (!revision || !currentRevision || currentRevision.id !== revision.id) {
+    const revision = history.find((event) => event.id === input.revisionEventId
+      && isResponseVersionEventType(event.eventType) && event.status !== 'FAILED' && event.status !== 'UNSUPPORTED');
+    if (!revision || !isLatestResponseVersionForSelection(history, revision.id)) {
       throw new CommentWorkflowAuditError('RESPONSE_EVALUATION_REVISION_STALE');
     }
     return this.events.append({
@@ -363,20 +514,47 @@ export class RecordResponseEvaluation {
       operationId: null,
       batchOperationId: null,
       parentEventId: revision.id,
-      payload: { revisionEventId: revision.id, evaluation: { ...input.evaluation } },
+      payload: {
+        revisionEventId: revision.id,
+        evaluation: { ...input.evaluation },
+        ...(input.verifiedReleaseScheduleSnapshot !== undefined
+          ? { verifiedReleaseScheduleSnapshot: input.verifiedReleaseScheduleSnapshot }
+          : {}),
+      },
       recordedAt: new Date(this.now()).toISOString(),
     });
   }
 
-  private validateEvaluation(evaluation: Readonly<Record<string, unknown>>): void {
+  private validateEvaluation(
+    evaluation: Readonly<Record<string, unknown>>,
+    scheduleSnapshot?: VerifiedReleaseScheduleSnapshot | null,
+  ): void {
     if (typeof evaluation !== 'object' || evaluation === null || Array.isArray(evaluation)) {
       throw new CommentWorkflowAuditError('RESPONSE_EVALUATION_INVALID');
     }
+    const scheduleConsistencySignal = isRecord(evaluation.signals)
+      ? evaluation.signals.scheduleConsistency
+      : undefined;
+    const scheduleConsistencyMatches = isValidNoulSignal(scheduleConsistencySignal)
+      && typeof evaluation.scheduleConsistency === 'number'
+      && Math.abs(evaluation.scheduleConsistency - scheduleConsistencySignal.probability) <= 1e-9;
     const scores = [evaluation.relevance, evaluation.tone, evaluation.helpfulness, evaluation.factualRisk, evaluation.toxicityRisk, evaluation.hallucinationRisk, evaluation.confidence];
     if (!['provider', 'model', 'schemaVersion'].every((key) => typeof evaluation[key] === 'string' && Boolean((evaluation[key] as string).trim()))
       || scores.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1)
       || !['APPROVE', 'REVIEW', 'REJECT'].includes(evaluation.publishRecommendation as string)
-      || (evaluation.rationale !== null && typeof evaluation.rationale !== 'string')) {
+      || (evaluation.rationale !== null && typeof evaluation.rationale !== 'string')
+      || (evaluation.scheduleConsistency !== undefined && !isUnitScore(evaluation.scheduleConsistency))
+      || (evaluation.signals !== undefined && !isValidResponseEvaluationSignals(evaluation.signals))
+      || (evaluation.usage !== undefined && evaluation.usage !== null && !isValidProviderUsage(evaluation.usage))
+      || (scheduleSnapshot !== undefined && scheduleSnapshot !== null && !isValidVerifiedReleaseScheduleSnapshot(scheduleSnapshot))
+      || ((evaluation.scheduleConsistency !== undefined || scheduleConsistencySignal !== undefined)
+        && (scheduleSnapshot === undefined || scheduleSnapshot === null))
+      || (scheduleSnapshot?.status === 'ACTIVE'
+        && (!isUnitScore(evaluation.scheduleConsistency)
+          || !isRecord(evaluation.signals)
+          || !scheduleConsistencyMatches))
+      || (scheduleSnapshot !== undefined && scheduleSnapshot !== null && scheduleSnapshot.status !== 'ACTIVE'
+        && (evaluation.scheduleConsistency !== undefined || scheduleConsistencySignal !== undefined))) {
       throw new CommentWorkflowAuditError('RESPONSE_EVALUATION_INVALID');
     }
   }

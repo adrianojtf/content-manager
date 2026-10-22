@@ -21,6 +21,13 @@
 - Keep external DTOs inside adapters.
 - Avoid premature microservices.
 
+## Frontend Appearance
+
+- Every screen and UI state must be compatible with both light and dark themes.
+- Use theme tokens for surfaces, text, borders, and interactive states; avoid hard-coded colors that assume a light background.
+- Verify new or changed UI in both themes, including forms, loading, empty, and error states where applicable.
+- Preserve readable contrast, visible focus indicators, and form-control color schemes in both themes.
+
 ## Social Integrations
 
 - Each platform is an independent adapter.
@@ -75,3 +82,10 @@ The application must evaluate:
 - Critical user journeys require end-to-end (E2E) tests that exercise the application flow across relevant layers.
 - E2E tests must use deterministic test doubles for external services unless a separately controlled sandbox test is explicitly required; they must not rely on production services.
 - AI workflows require deterministic validation around the AI output; do not use live model output as the sole test oracle.
+
+## Trilingual Content
+
+- User-facing interface text must have semantic catalog entries in `pt-BR`, `en-US`, and `es-ES`; catalog parity is enforced by tests.
+- The interface locale is selected independently from generated content and persisted locally until authenticated locale preferences are wired.
+- Every AI-generated project artifact (response suggestions, audience insights, content recommendations) must produce separate, auditable variants in Portuguese, English, and Spanish. Preserve partial successes and record failures per language; never combine variants into one sendable message.
+- User-facing interface copy must be cataloged in all three locales. Project specifications remain in their canonical authoring language unless a localized document is explicitly requested.

@@ -33,6 +33,7 @@ interface OAuthConfiguration {
   readonly clientSecret?: string;
   readonly redirectUri: string;
   readonly graphApiVersion: string;
+  readonly configId?: string;
 }
 
 interface StoredPage extends FacebookPageCandidate {
@@ -55,7 +56,8 @@ export class FacebookOAuthClient implements FacebookOAuthProvider {
     url.searchParams.set('client_id', config.clientId);
     url.searchParams.set('redirect_uri', config.redirectUri);
     url.searchParams.set('response_type', 'code');
-    url.searchParams.set('scope', FACEBOOK_PAGE_SCOPES.join(','));
+    if (config.configId) url.searchParams.set('config_id', config.configId);
+    else url.searchParams.set('scope', FACEBOOK_PAGE_SCOPES.join(','));
     url.searchParams.set('state', state);
     return url.toString();
   }
@@ -79,7 +81,7 @@ export class FacebookOAuthClient implements FacebookOAuthProvider {
       accessToken: longToken.accessToken,
       refreshToken: null,
       grantedScopes,
-      expiresAt: new Date(Math.min(Date.parse(longToken.expiresAt), this.now() + 5 * 60 * 1000)).toISOString(),
+      expiresAt: new Date(Math.min(longToken.expiresAt ? Date.parse(longToken.expiresAt) : Number.POSITIVE_INFINITY, this.now() + 5 * 60 * 1000)).toISOString(),
     });
     let selectionId: string;
     try {
@@ -136,7 +138,7 @@ export class FacebookOAuthClient implements FacebookOAuthProvider {
     }
   }
 
-  private async exchangeCode(config: OAuthConfiguration, code: string): Promise<{ accessToken: string; expiresIn: number }> {
+  private async exchangeCode(config: OAuthConfiguration, code: string): Promise<{ accessToken: string; expiresIn: number | null }> {
     const url = new URL(`https://graph.facebook.com/${config.graphApiVersion}/oauth/access_token`);
     url.searchParams.set('client_id', config.clientId);
     url.searchParams.set('client_secret', config.clientSecret as string);
@@ -146,7 +148,7 @@ export class FacebookOAuthClient implements FacebookOAuthProvider {
     return this.validateToken(payload, 'FACEBOOK_OAUTH_TOKEN_EXCHANGE_FAILED');
   }
 
-  private async exchangeLongLivedToken(config: OAuthConfiguration, shortAccessToken: string): Promise<{ accessToken: string; expiresAt: string }> {
+  private async exchangeLongLivedToken(config: OAuthConfiguration, shortAccessToken: string): Promise<{ accessToken: string; expiresAt: string | null }> {
     const url = new URL(`https://graph.facebook.com/${config.graphApiVersion}/oauth/access_token`);
     url.searchParams.set('grant_type', 'fb_exchange_token');
     url.searchParams.set('client_id', config.clientId);
@@ -154,7 +156,7 @@ export class FacebookOAuthClient implements FacebookOAuthProvider {
     url.searchParams.set('fb_exchange_token', shortAccessToken);
     const payload = await this.getJson<FacebookTokenResponse>(url, undefined, 'FACEBOOK_OAUTH_TOKEN_EXCHANGE_FAILED');
     const token = this.validateToken(payload, 'FACEBOOK_OAUTH_TOKEN_EXCHANGE_FAILED');
-    return { accessToken: token.accessToken, expiresAt: new Date(this.now() + token.expiresIn * 1000).toISOString() };
+    return { accessToken: token.accessToken, expiresAt: token.expiresIn === null ? null : new Date(this.now() + token.expiresIn * 1000).toISOString() };
   }
 
   private async getGrantedScopes(config: OAuthConfiguration, accessToken: string): Promise<readonly string[]> {
@@ -199,13 +201,18 @@ export class FacebookOAuthClient implements FacebookOAuthProvider {
     };
   }
 
-  private validateToken(payload: FacebookTokenResponse, errorCode: 'FACEBOOK_OAUTH_TOKEN_EXCHANGE_FAILED'): { accessToken: string; expiresIn: number } {
+  private validateToken(payload: FacebookTokenResponse, errorCode: 'FACEBOOK_OAUTH_TOKEN_EXCHANGE_FAILED'): { accessToken: string; expiresIn: number | null } {
+    const expiresIn = payload.expires_in;
     if (typeof payload.access_token !== 'string' || !payload.access_token.trim()
       || typeof payload.token_type !== 'string' || payload.token_type.toLowerCase() !== 'bearer'
-      || typeof payload.expires_in !== 'number' || !Number.isFinite(payload.expires_in) || payload.expires_in <= 0) {
+      || (expiresIn !== undefined && (typeof expiresIn !== 'number' || !Number.isFinite(expiresIn) || expiresIn <= 0))) {
+      if (this.environment.CONTENT_MANAGER_DEBUG_SYNC === '2') {
+        const { access_token: _accessToken, ...rest } = payload as Record<string, unknown>;
+        console.log(`[facebook-oauth] ${errorCode} invalid-payload=${JSON.stringify(rest)}`);
+      }
       throw new FacebookOAuthError(errorCode);
     }
-    return { accessToken: payload.access_token, expiresIn: payload.expires_in };
+    return { accessToken: payload.access_token, expiresIn: expiresIn ?? null };
   }
 
   private async getJson<T>(url: URL, accessToken: string | undefined, failureCode: 'FACEBOOK_OAUTH_TOKEN_EXCHANGE_FAILED' | 'FACEBOOK_OAUTH_PROVIDER_UNAVAILABLE'): Promise<T> {
@@ -215,7 +222,13 @@ export class FacebookOAuthClient implements FacebookOAuthProvider {
     } catch {
       throw new FacebookOAuthError('FACEBOOK_OAUTH_PROVIDER_UNAVAILABLE');
     }
-    if (!response.ok) throw new FacebookOAuthError(failureCode);
+    if (!response.ok) {
+      if (this.environment.CONTENT_MANAGER_DEBUG_SYNC === '2') {
+        const body = await response.text().catch(() => '');
+        console.log(`[facebook-oauth] ${failureCode} status=${response.status} body=${body}`);
+      }
+      throw new FacebookOAuthError(failureCode);
+    }
     try {
       return await response.json() as T;
     } catch {
@@ -240,6 +253,7 @@ export class FacebookOAuthClient implements FacebookOAuthProvider {
     }
     const isLocalHttp = redirect.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(redirect.hostname);
     if (redirect.protocol !== 'https:' && !isLocalHttp) throw new FacebookOAuthError('FACEBOOK_OAUTH_CONFIGURATION_INVALID');
-    return { clientId, redirectUri: redirect.toString(), graphApiVersion, ...(clientSecret ? { clientSecret } : {}) };
+    const configId = this.environment.FACEBOOK_OAUTH_CONFIG_ID?.trim();
+    return { clientId, redirectUri: redirect.toString(), graphApiVersion, ...(clientSecret ? { clientSecret } : {}), ...(configId ? { configId } : {}) };
   }
 }

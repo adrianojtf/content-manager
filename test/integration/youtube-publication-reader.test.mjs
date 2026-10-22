@@ -62,7 +62,7 @@ test('YouTube reader lists and normalizes uploaded videos with provider paginati
     }),
   ]);
 
-  const page = await reader.listPublications(account, 'page-one');
+  const page = await reader.listPublications(account, 'page-one', 10);
 
   assert.deepEqual(page, {
     items: [{
@@ -82,6 +82,26 @@ test('YouTube reader lists and normalizes uploaded videos with provider paginati
   assert.equal(requests[0].options.headers.Authorization, 'Bearer test-only-token');
   assert.equal(requests[1].url.searchParams.get('playlistId'), 'UU-uploads-1');
   assert.equal(requests[1].url.searchParams.get('pageToken'), 'page-one');
+  assert.equal(requests[1].url.searchParams.get('maxResults'), '10');
+});
+
+test('YouTube reader filters deleted/unavailable playlist placeholders and keeps valid videos and the next cursor', async () => {
+  const { reader } = createReader([
+    jsonResponse({ items: [{ contentDetails: { relatedPlaylists: { uploads: 'UU-uploads-1' } } }] }),
+    jsonResponse({
+      items: [
+        { snippet: { title: ' Deleted Video ', description: 'This video is unavailable.' } },
+        { contentDetails: { videoId: 'video-1' }, snippet: { title: 'Available video', description: 'Description' } },
+        { contentDetails: { videoId: 'video-2' }, snippet: { title: 'Deleted video archive', description: 'This video is unavailable.' } },
+      ],
+      nextPageToken: 'page-after-placeholder',
+    }),
+  ]);
+
+  const page = await reader.listPublications(account, undefined, 5);
+
+  assert.deepEqual(page.items.map((item) => item.externalPublicationId), ['video-1', 'video-2']);
+  assert.equal(page.nextCursor, 'page-after-placeholder');
 });
 
 test('YouTube reader refuses to call the provider without a read scope', async () => {

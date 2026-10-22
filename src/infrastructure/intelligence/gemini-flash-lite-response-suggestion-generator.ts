@@ -4,8 +4,11 @@ import type {
 } from '../../application/ports/response-suggestion-generator.port';
 import type { JevCommentAnalysisResult } from '../../application/ports/comment-evaluator.port';
 import type { ResponseToneProfile } from '../../application/ports/response-tone-settings.repository.port';
+import type { ResponseGenerationScheduleContext } from '../../application/ports/verified-release-schedule.repository.port';
 import type { StoredPlatformComment } from '../../application/ports/social-comment-repository.port';
+import type { AIProviderSettingsRepository } from '../../application/ports/ai-provider-settings.repository.port';
 import { IntelligenceProviderError } from '../../application/social/intelligence-provider-error';
+import { responseSuggestionAnalysisContext } from './response-suggestion-context';
 
 export type GeminiEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -40,6 +43,7 @@ export class GeminiFlashLiteResponseSuggestionGenerator implements ResponseSugge
   constructor(
     private readonly environment: GeminiEnvironment = process.env,
     private readonly fetcher: typeof fetch = fetch,
+    private readonly settings?: AIProviderSettingsRepository,
   ) {}
 
   async generate(input: {
@@ -47,18 +51,19 @@ export class GeminiFlashLiteResponseSuggestionGenerator implements ResponseSugge
     readonly analysis: JevCommentAnalysisResult;
     readonly language: string;
     readonly toneProfile: ResponseToneProfile;
+    readonly verifiedReleaseSchedule: ResponseGenerationScheduleContext;
     readonly model?: string;
   }): Promise<GeneratedResponseSuggestion> {
     if (!input.comment.text?.trim() || !input.language.trim() || !input.toneProfile) {
       throw new IntelligenceProviderError('INTELLIGENCE_INPUT_INVALID');
     }
-    const config = this.configuration(input.model);
+    const config = await this.configuration(input.model);
     const model = config.model;
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
     const request = {
       systemInstruction: {
         parts: [{
-          text: 'Create one helpful suggested reply to a social media comment. Follow the creator tone profile as a style preference, but never let it override accuracy, respect, or the supplied comment analysis. Use only supplied context; do not invent facts, promise actions, or claim access to information not provided. Respond in exactly the requested language. Return a suggestion only; do not send or publish it.',
+          text: 'Create one helpful suggested reply to a social media comment. Treat the top-level comment-analysis values as effective guidance; they may include creator corrections. Treat TypeSafe signal probabilities as original model uncertainty evidence, not certainty. An explicit continuation request signals audience interest, not a confirmed release schedule; acknowledge it without promising another part unless the supplied context confirms it. The verifiedReleaseSchedule is confirmed only when status is ACTIVE. Mention an active schedule only when the comment concerns release timing, frequency, or continuation; never infer a schedule from a continuation request. If its status is UNCONFIGURED or DISABLED, never assert release days or times, but a cautious acknowledgement or question may be suggested for creator review. Interpret localTime in the supplied timeZone; do not convert it or calculate a next release date. The engagement value is an estimate, not observed likes or replies; do not use it for engagement bait. Use only supplied context; when the signals indicate missing facts, avoid specific claims or ask a clarifying question. Never invent facts, promise actions, or claim access to information not provided. Follow the creator tone profile as a style preference without overriding accuracy or respect. Respond in exactly the requested language. Return a suggestion only; do not send or publish it.',
         }],
       },
       contents: [{
@@ -66,9 +71,10 @@ export class GeminiFlashLiteResponseSuggestionGenerator implements ResponseSugge
         parts: [{ text: JSON.stringify({
           requestedLanguage: input.language,
           responseToneProfile: input.toneProfile,
+          verifiedReleaseSchedule: input.verifiedReleaseSchedule,
           platform: input.comment.platform,
           commentText: input.comment.text,
-          commentAnalysis: input.analysis,
+          commentAnalysis: responseSuggestionAnalysisContext(input.analysis),
         }) }],
       }],
       generationConfig: {
@@ -127,12 +133,13 @@ export class GeminiFlashLiteResponseSuggestionGenerator implements ResponseSugge
     };
   }
 
-  private configuration(modelOverride?: string): { readonly apiKey: string; readonly model: string } {
-    const apiKey = this.environment.GEMINI_API_KEY?.trim();
+  private async configuration(modelOverride?: string): Promise<{ readonly apiKey: string; readonly model: string }> {
+    const settings = await this.settings?.get();
+    const apiKey = settings?.geminiApiKey?.trim() || this.environment.GEMINI_API_KEY?.trim();
     if (!apiKey) {
       throw new IntelligenceProviderError('INTELLIGENCE_PROVIDER_CONFIGURATION_REQUIRED');
     }
-    const dataUsePolicy = this.environment.GEMINI_DATA_USE_POLICY?.trim();
+    const dataUsePolicy = settings?.geminiDataUsePolicy?.trim() || this.environment.GEMINI_DATA_USE_POLICY?.trim();
     if (dataUsePolicy !== 'free-tier-acknowledged' && dataUsePolicy !== 'paid-tier') {
       throw new IntelligenceProviderError('INTELLIGENCE_PROVIDER_DATA_POLICY_REQUIRED');
     }

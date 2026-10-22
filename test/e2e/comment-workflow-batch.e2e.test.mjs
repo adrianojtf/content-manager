@@ -42,7 +42,7 @@ test('comment workflow batch API returns independent per-comment outcomes and pr
     assert.equal(response.status, 201);
     assert.deepEqual(await response.json(), result);
   });
-  assert.deepEqual(calls, [{ operation: 'classify', scope: 'publication', accountId, publicationId: 'video-1', externalCommentId: undefined, platform: undefined, language: undefined }]);
+  assert.deepEqual(calls, [{ operation: 'classify', scope: 'publication', accountId, publicationId: 'video-1', externalCommentId: undefined, platform: undefined }]);
 });
 
 test('comment workflow batch API accepts an explicitly selected network scope', async () => {
@@ -56,7 +56,7 @@ test('comment workflow batch API accepts an explicitly selected network scope', 
     assert.equal(response.status, 201);
     assert.deepEqual(await response.json(), result);
   });
-  assert.deepEqual(calls, [{ operation: 'sync', scope: 'platform', accountId: undefined, publicationId: undefined, externalCommentId: undefined, platform: 'youtube', language: undefined }]);
+  assert.deepEqual(calls, [{ operation: 'sync', scope: 'platform', accountId: undefined, publicationId: undefined, externalCommentId: undefined, platform: 'youtube' }]);
 });
 
 test('comment workflow batch API rejects client-selected tenants and send operations', async () => {

@@ -6,7 +6,7 @@ import type { SocialCommentRepository } from '../ports/social-comment-repository
 import type { SocialCommentResponder } from '../ports/social-comment.port';
 import { parseSocialAccountId } from '../../domain/social/social-account-id';
 import { CommentWorkflowAuditError } from './comment-workflow-audit-error';
-import { isResponseVersionEventType } from './comment-workflow-audit';
+import { isLatestResponseVersionForSelection, isResponseVersionEventType } from './comment-workflow-audit';
 import { SocialProviderError } from './social-provider-error';
 
 export interface SendManualCommentReplyInput {
@@ -39,9 +39,9 @@ export class SendManualCommentReply {
       throw new CommentWorkflowAuditError('COMMENT_NOT_FOUND');
     }
     const history = await this.events.listByComment(tenantId, account.id, comment.externalCommentId, recordedAt);
-    const revision = history.find((event) => event.id === input.revisionEventId && isResponseVersionEventType(event.eventType));
-    const latestRevision = history.filter((event) => isResponseVersionEventType(event.eventType)).at(-1);
-    if (!revision || latestRevision?.id !== revision.id) {
+    const revision = history.find((event) => event.id === input.revisionEventId
+      && isResponseVersionEventType(event.eventType) && event.status !== 'FAILED' && event.status !== 'UNSUPPORTED');
+    if (!revision || !isLatestResponseVersionForSelection(history, revision.id)) {
       throw new CommentWorkflowAuditError('MANUAL_REPLY_REVISION_STALE');
     }
     const responseRootId = revision.eventType === 'RESPONSE_SUGGESTION_GENERATED' || revision.eventType === 'MANUAL_RESPONSE_CREATED'

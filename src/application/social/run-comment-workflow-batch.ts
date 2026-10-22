@@ -14,7 +14,7 @@ import { SocialProviderError } from './social-provider-error';
 
 export type CommentWorkflowBatchOperation = 'sync' | 'classify' | 'generate';
 export type CommentWorkflowBatchScope = 'comment' | 'publication' | 'account' | 'platform';
-export type CommentWorkflowBatchItemStatus = 'SUCCEEDED' | 'FAILED' | 'UNSUPPORTED';
+export type CommentWorkflowBatchItemStatus = 'SUCCEEDED' | 'PARTIAL' | 'FAILED' | 'UNSUPPORTED';
 
 export interface RunCommentWorkflowBatchInput {
   readonly operation: CommentWorkflowBatchOperation;
@@ -23,7 +23,6 @@ export interface RunCommentWorkflowBatchInput {
   readonly publicationId?: string;
   readonly externalCommentId?: string;
   readonly platform?: SocialPlatform;
-  readonly language?: string;
 }
 
 export interface CommentWorkflowBatchItem {
@@ -33,6 +32,8 @@ export interface CommentWorkflowBatchItem {
   readonly externalCommentId?: string;
   readonly status: CommentWorkflowBatchItemStatus;
   readonly artifactId?: string;
+  readonly artifactIds?: readonly string[];
+  readonly failedLanguages?: readonly string[];
   readonly commentsSynced?: number;
   readonly errorCode?: string;
 }
@@ -70,8 +71,8 @@ export class RunCommentWorkflowBatch {
     const results = input.operation === 'sync'
       ? await this.syncScope(tenantId, input, batchOperationId)
       : await this.processComments(tenantId, input, batchOperationId);
-    const successCount = results.filter((result) => result.status === 'SUCCEEDED').length;
-    const failureCount = results.length - successCount;
+    const successCount = results.filter((result) => result.status === 'SUCCEEDED' || result.status === 'PARTIAL').length;
+    const failureCount = results.filter((result) => result.status !== 'SUCCEEDED').length;
     return {
       batchOperationId,
       operation: input.operation,
@@ -90,7 +91,6 @@ export class RunCommentWorkflowBatch {
     const hasPublication = typeof input.publicationId === 'string' && Boolean(input.publicationId.trim());
     const hasComment = typeof input.externalCommentId === 'string' && Boolean(input.externalCommentId.trim());
     const hasPlatform = input.platform === 'youtube' || input.platform === 'instagram' || input.platform === 'facebook' || input.platform === 'tiktok';
-    const hasLanguage = typeof input.language === 'string' && Boolean(input.language.trim());
     const validScope = input.scope === 'comment'
       ? input.operation !== 'sync' && hasAccount && hasComment && !hasPublication && input.platform === undefined
       : input.scope === 'publication'
@@ -100,9 +100,7 @@ export class RunCommentWorkflowBatch {
           : input.scope === 'platform'
             ? hasPlatform && !hasAccount && !hasPublication && !hasComment
             : false;
-    if (!operations.includes(input.operation) || !scopes.includes(input.scope) || !validScope
-      || (input.operation === 'generate' && !hasLanguage)
-      || (input.operation !== 'generate' && input.language !== undefined)) {
+    if (!operations.includes(input.operation) || !scopes.includes(input.scope) || !validScope) {
       throw new CommentWorkflowAuditError('COMMENT_WORKFLOW_BATCH_INPUT_INVALID');
     }
   }
@@ -137,17 +135,40 @@ export class RunCommentWorkflowBatch {
     for (const comment of comments) {
       const commentAccountId = comment.socialAccountId;
       try {
-        const artifact = input.operation === 'classify'
-          ? await this.evaluateComment.execute({ accountId: commentAccountId, externalCommentId: comment.externalCommentId, batchOperationId })
-          : await this.generateSuggestion.execute({ accountId: commentAccountId, externalCommentId: comment.externalCommentId, language: input.language as string, batchOperationId });
-        results.push({
-          accountId: commentAccountId,
-          platform: comment.platform,
-          publicationId: comment.externalPublicationId,
-          externalCommentId: comment.externalCommentId,
-          status: 'SUCCEEDED',
-          artifactId: artifact.id,
-        });
+        if (input.operation === 'classify') {
+          const artifact = await this.evaluateComment.execute({
+            accountId: commentAccountId,
+            externalCommentId: comment.externalCommentId,
+            batchOperationId,
+          });
+          results.push({
+            accountId: commentAccountId,
+            platform: comment.platform,
+            publicationId: comment.externalPublicationId,
+            externalCommentId: comment.externalCommentId,
+            status: 'SUCCEEDED',
+            artifactId: artifact.id,
+          });
+        } else {
+          const generated = await this.generateSuggestion.execute({
+            accountId: commentAccountId,
+            externalCommentId: comment.externalCommentId,
+            batchOperationId,
+          });
+          const artifactIds = generated.variants.map((variant) => variant.id);
+          results.push({
+            accountId: commentAccountId,
+            platform: comment.platform,
+            publicationId: comment.externalPublicationId,
+            externalCommentId: comment.externalCommentId,
+            status: generated.failures.length > 0 ? 'PARTIAL' : 'SUCCEEDED',
+            ...(artifactIds[0] ? { artifactId: artifactIds[0] } : {}),
+            artifactIds,
+            ...(generated.failures.length > 0
+              ? { failedLanguages: generated.failures.map((failure) => failure.language), errorCode: generated.failures[0].errorCode }
+              : {}),
+          });
+        }
       } catch (error) {
         results.push({
           accountId: commentAccountId,
@@ -187,7 +208,7 @@ export class RunCommentWorkflowBatch {
     for (let pageNumber = 0; pageNumber < maximumProviderPages; pageNumber += 1) {
       let result: Awaited<ReturnType<ListSocialPublications['execute']>>[number] | undefined;
       try {
-        const pages = await this.publications.execute({ accountId, cursors: cursor ? { [accountId]: cursor } : undefined });
+        const pages = await this.publications.execute({ accountId, cursors: cursor ? { [accountId]: cursor } : undefined, pageSize: 25 });
         result = pages.find((item) => item.account.id === accountId);
       } catch (error) {
         results.push({ accountId, platform, status: this.isUnsupported(error) ? 'UNSUPPORTED' : 'FAILED', errorCode: this.errorCode(error) });

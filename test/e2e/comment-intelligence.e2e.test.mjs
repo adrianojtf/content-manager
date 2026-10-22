@@ -40,23 +40,64 @@ test('comment classification HTTP route invokes one comment evaluation and retur
   assert.deepEqual(calls, [{ accountId, externalCommentId, batchOperationId: undefined }]);
 });
 
-test('response generation HTTP route requires a language and ignores client-supplied actor metadata', async () => {
+test('response generation HTTP route returns all language variants and ignores client-supplied actor metadata', async () => {
   const calls = [];
+  const result = {
+    variants: ['pt-BR', 'en-US', 'es-ES'].map((language) => ({ id: `suggestion-${language}`, payload: { language } })),
+    failures: [],
+  };
+  const toneOverride = 'CASUAL';
   const options = {
     evaluate: { execute: async () => ({}) },
-    generate: { execute: async (input) => { calls.push(input); return { id: 'suggestion-event-1', actorSource: 'GENERATOR' }; } },
+    generate: { execute: async (input) => { calls.push(input); return result; } },
   };
 
   await withApp(options, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/social/accounts/${accountId}/comments/${externalCommentId}/responses/generate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ language: 'pt-BR', analysisEventId: 'analysis-1', actorSource: 'CREATOR_LOCAL' }),
+      body: JSON.stringify({ analysisEventId: 'analysis-1', toneOverride, actorSource: 'CREATOR_LOCAL' }),
     });
     assert.equal(response.status, 201);
-    assert.deepEqual(await response.json(), { id: 'suggestion-event-1', actorSource: 'GENERATOR' });
+    assert.deepEqual(await response.json(), result);
   });
-  assert.deepEqual(calls, [{ accountId, externalCommentId, language: 'pt-BR', analysisEventId: 'analysis-1', batchOperationId: undefined }]);
+  assert.deepEqual(calls, [{ accountId, externalCommentId, analysisEventId: 'analysis-1', toneOverride, batchOperationId: undefined }]);
+});
+
+test('response generation HTTP route does not accept a caller-selected single language', async () => {
+  const options = {
+    evaluate: { execute: async () => ({}) },
+    generate: { execute: async () => ({ variants: [], failures: [] }) },
+  };
+
+  await withApp(options, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/social/accounts/${accountId}/comments/${externalCommentId}/responses/generate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ language: 'pt-BR' }),
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { code: 'RESPONSE_SUGGESTION_INVALID' });
+  });
+});
+
+test('response generation HTTP route rejects invalid one-time tone overrides', async () => {
+  const calls = [];
+  const options = {
+    evaluate: { execute: async () => ({}) },
+    generate: { execute: async (input) => { calls.push(input); return { variants: [], failures: [] }; } },
+  };
+
+  await withApp(options, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/social/accounts/${accountId}/comments/${externalCommentId}/responses/generate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ toneOverride: 'LOUD' }),
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { code: 'RESPONSE_SUGGESTION_INVALID' });
+  });
+  assert.deepEqual(calls, []);
 });
 
 test('explicit high-risk suggestion journey preserves JEV advice and never auto-generates after classification', async () => {
@@ -111,6 +152,15 @@ test('explicit high-risk suggestion journey preserves JEV advice and never auto-
   const accounts = { findById: async (scope, id) => scope === tenantId && id === socialAccountId ? account : null };
   const comments = { findByExternalCommentId: async (scope, id, externalId) => scope === tenantId && id === socialAccountId && externalId === externalCommentId ? comment : null };
   const now = () => Date.parse(createdAt);
+  const verifiedSchedule = {
+    enabled: true,
+    daysOfWeek: ['MONDAY', 'WEDNESDAY'],
+    localTime: '20:30',
+    timeZone: 'America/Sao_Paulo',
+    version: 3,
+    updatedAt: '2026-10-15T12:00:00.000Z',
+    confirmedAt: '2026-10-15T12:00:00.000Z',
+  };
   const recordAnalysis = new RecordCommentAnalysis(workflowEvents, tenant, now);
   const recordSuggestion = new RecordResponseSuggestion(workflowEvents, tenant, now);
   const generatorCalls = [];
@@ -120,9 +170,15 @@ test('explicit high-risk suggestion journey preserves JEV advice and never auto-
   const generate = new GenerateCommentResponseSuggestion(accounts, comments, {
     generate: async (input) => {
       generatorCalls.push(input);
-      return { text: 'Sinto muito pelo ocorrido. Vou verificar.', language: input.language, intendedTone: 'EMPATHETIC', provider: 'TEST', model: 'deterministic', confidence: 0.8, rationale: 'Acknowledges the complaint.' };
+      return { text: `Reply ${input.language}`, language: input.language, intendedTone: 'EMPATHETIC', provider: 'TEST', model: 'deterministic', confidence: 0.8, rationale: 'Acknowledges the complaint.' };
     },
-  }, recordSuggestion, workflowEvents, tenant, { get: async () => null }, now);
+  }, recordSuggestion, workflowEvents, tenant, { get: async () => null }, { get: async () => null }, {
+    get: async (scope, id) => {
+      assert.equal(scope, tenantId);
+      assert.equal(id, socialAccountId);
+      return verifiedSchedule;
+    },
+  }, { get: async () => null }, now);
 
   await withApp({ evaluate, generate }, async (baseUrl) => {
     const classification = await fetch(`${baseUrl}/social/accounts/${accountId}/comments/${externalCommentId}/classification`, { method: 'POST' });
@@ -134,13 +190,23 @@ test('explicit high-risk suggestion journey preserves JEV advice and never auto-
     const suggestionResponse = await fetch(`${baseUrl}/social/accounts/${accountId}/comments/${externalCommentId}/responses/generate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ language: 'pt-BR', analysisEventId: analysisEvent.id }),
+      body: JSON.stringify({ analysisEventId: analysisEvent.id }),
     });
     assert.equal(suggestionResponse.status, 201);
     const suggestionEvent = await suggestionResponse.json();
-    assert.equal(suggestionEvent.parentEventId, analysisEvent.id);
-    assert.equal(generatorCalls.length, 1);
-    assert.deepEqual(generatorCalls[0].analysis, highRiskAnalysis);
+    assert.deepEqual(suggestionEvent.variants.map((event) => event.payload.language), ['pt-BR', 'en-US', 'es-ES']);
+    assert.equal(generatorCalls.length, 3);
+    assert.ok(generatorCalls.every((call) => JSON.stringify(call.analysis) === JSON.stringify(highRiskAnalysis)));
+    assert.ok(generatorCalls.every((call) => JSON.stringify(call.verifiedReleaseSchedule) === JSON.stringify({
+      status: 'ACTIVE',
+      daysOfWeek: verifiedSchedule.daysOfWeek,
+      localTime: verifiedSchedule.localTime,
+      timeZone: verifiedSchedule.timeZone,
+    })));
+    assert.ok(suggestionEvent.variants.every((event) => (
+      event.payload.verifiedReleaseScheduleSnapshot.status === 'ACTIVE'
+      && event.payload.verifiedReleaseScheduleSnapshot.schedule.version === 3
+    )));
   });
 });
 

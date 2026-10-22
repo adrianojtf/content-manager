@@ -1,13 +1,35 @@
 # Technical Specification — Social Accounts and Publishing
 
-**Status:** Local authorization flows are implemented for YouTube, Instagram Login, Facebook Pages, and TikTok Business with deterministic tests. Provider live app access/approval remains pending. TikTok uses the app-generated account authorization URL as runtime configuration; its official token example includes `video.list`, `comment.list`, and `comment.list.manage`. The refresh request matches the documented short-term account-token renewal contract and is covered by deterministic tests; verification against an approved app remains pending. TikTok documents a distinct short-term account-token revoke endpoint, but this application does not expose or call it. Phase 4 publication metadata, scheduling, and retry policy remain open.
+**Status:** Local authorization flows are implemented for YouTube, Instagram Login, Facebook Pages, and TikTok Business with deterministic tests. Phase 1 synchronized-publication metadata persistence is implemented with tenant/account-scoped storage. Provider live app access/approval and creator-reply attribution remain pending verification. TikTok uses the app-generated account authorization URL as runtime configuration; its official token example includes `video.list`, `comment.list`, and `comment.list.manage`. The refresh request matches the documented short-term account-token renewal contract and is covered by deterministic tests; verification against an approved app remains pending. TikTok documents a distinct short-term account-token revoke endpoint, but this application does not expose or call it. Phase 4 outbound publication metadata, scheduling, and retry policy remain open.
 
-**Product PRD:** [Social Accounts and Publishing](../product/prds/social-publishing.md)  
+**Product PRD:** [Social Accounts and Publishing](../product/prds/social-publishing.md)
+
+**Synchronization specification:** [Social Content Synchronization](technical-social-content-synchronization.md)
+
 **Existing use-case specification:** [Publish Content](publication/publish-content.md)
 
 ## 1. Scope
 
 The active initial MVP targets YouTube, Instagram professional Business/Creator accounts, Facebook Pages managed by the authorizing user, and TikTok Business accounts for comment/read/reply workflows on owned organic videos. Each adapter, account type, permission, and operation is independent and must be verified before live dispatch. Phase 4 video upload/publishing, scheduling, and safe retries remain deferred.
+
+### Connected-account profile settings
+
+- `GET /social/accounts` returns only tenant-owned account summaries (`id`, `platform`, `externalAccountId`, and `displayName`). It does not resolve credentials or call any social provider.
+- The CreatorDesk profile settings screen uses this list to show connected accounts and opens the existing provider-specific `/social/connections/{platform}/authorize` route for connection/reauthorization. OAuth client credentials remain runtime-only; the UI never accepts or stores them.
+- Each listed account has an explicit disconnect action. The UI warns that disconnect permanently removes the locally cached account data and asks for confirmation before calling `DELETE /social/accounts/{accountId}`.
+- Disconnect resolves the pilot tenant on the server and atomically deletes only the matching account and its encrypted credential. Foreign-key cascades remove synchronized publication metadata, comments and creator replies, comment workflow history, and account tone settings. Missing or other-tenant account IDs return the same not-found result.
+- Disconnect does not call platform APIs or revoke the provider-side authorization grant. The creator must revoke that grant separately in the provider's account settings if desired.
+- Provider callbacks return normalized account data without tokens. Facebook returns a short-lived `selectionId` and Page candidates instead of connecting a Page implicitly; the UI requires a Page choice and posts only `{ selectionId, pageId }` to `/social/connections/facebook/select`.
+- After a successful connection, the screen reloads the safe account list. Listing accounts is kept separate from publication listing so opening profile settings does not trigger provider reads.
+
+### Publication page size and cursors
+
+- `GET /social/publications` accepts an optional `platform` filter and a `pageSize` of `5`, `10`, or `25`; omission defaults to `5`. Other page sizes/platforms are rejected with a stable client error.
+- `ListSocialPublications` passes the requested size to each platform adapter. YouTube maps it to `maxResults`, Instagram/Facebook to Graph API `limit`, and TikTok Business to `max_count`. Each adapter preserves its own opaque cursor and provider-specific page behavior.
+- The browser requests only the active platform and keeps only the current provider page per account. Previous/next navigation reuses cursor history and replaces publication data instead of appending pages.
+- A successfully fetched and normalized page is upserted as tenant/account-scoped social publication metadata before the account result is reported as available. Only explicitly requested pages are persisted; no historical backfill is implied. See [Social Content Synchronization](technical-social-content-synchronization.md).
+- Comment sync remains a separate explicit operation; listing a publication page never syncs comments. See the community-management specification for the page-scoped sync action.
+- The YouTube reader filters playlist placeholder items only when the title is `Deleted video` and the description is `This video is unavailable.` (case/outer-whitespace-insensitive, with an optional final period) before normalizing IDs. Preserve the provider cursor, and keep valid videos from the same page. Do not apply this text heuristic to other providers.
 
 ### 1.1 Phase 1 provider contract baseline (SOC-01)
 
@@ -18,6 +40,20 @@ The active initial MVP targets YouTube, Instagram professional Business/Creator 
 - These local flows do not imply that this application has provider credentials, granted permissions, approved app access, or production authorization. OAuth client IDs/secrets are read lazily from runtime configuration, never stored in PostgreSQL or returned in DTOs. Live verification remains pending; never commit provider credentials.
 - OAuth connection flows only exchange credentials and perform the provider reads required to verify grants/identity/Page selection. They never send replies, publish content, or execute other social writes.
 - See the [Platform Capability Matrix](../integrations/platform-capabilities.md) for official references, local implementation status, and live-access status. Video publishing and scheduling remain Phase 4 and are not authorized by the Phase 1 contracts.
+
+### Optional local HTTPS for OAuth
+
+- HTTP remains the default. When both `LOCAL_HTTPS_KEY_PATH` and `LOCAL_HTTPS_CERT_PATH` are configured, the Nest server serves HTTPS on the configured `PORT` and still listens only on `127.0.0.1`; specifying just one path fails at startup.
+- The browser must trust the certificate and its Subject Alternative Name must cover `localhost`. The interface origin and the provider's registered callback must use the same HTTPS host and port; the app never rewrites OAuth redirect URIs.
+- Local TLS does not enable access from other machines or add product-user authentication. Private key material stays outside version control and is never returned to the frontend.
+
+### LAN access through an optional Nginx container
+
+- The API remains bound to `127.0.0.1`; optional LAN access is provided by a separately started Nginx container using Linux host networking and proxying to `http://127.0.0.1:3000`.
+- The proxy redirects its HTTP listener to HTTPS, requires a locally supplied certificate/key pair, restricts requests to the configured LAN CIDR, and disables access logs so OAuth callback codes/state are not written to request logs. Certificate private keys are local-only and must not be committed.
+- The proxy forwards the original path and query to the API. It does not rewrite OAuth `redirect_uri` values: each provider's registered callback and the matching `*_OAUTH_REDIRECT_URI` must use the same HTTPS URL reachable from the browser. TikTok's app-generated authorization URL must use that same callback.
+- An HTTPS hostname/certificate accepted by the browser and provider configuration is an operational prerequisite. A LAN IP or locally trusted certificate may not be accepted by every provider; verify each provider's redirect-URI rules before enabling its flow.
+- The Phase 1 API still has no end-user authentication. The CIDR restriction and network firewall are required access controls, not a replacement for application authentication. OAuth flow state remains single-use and process-local; keep one API instance running throughout the flow.
 
 ## 2. Architectural Placement
 
@@ -61,16 +97,16 @@ The credential vault keeps provider tokens and granted scopes out of account row
 ### Instagram Login (Phase 1 local connection)
 
 - `GET /social/connections/instagram/authorize` creates a random, single-use `state` with a five-minute lifetime and redirects to the official Instagram Login authorization endpoint. It requests only `instagram_business_basic` and `instagram_business_manage_comments`, sends `state`, and sets `enable_fb_login=false` so the login UI does not offer the Facebook Login path. The official Instagram Login contract documents `state` but not PKCE; do not copy the YouTube PKCE behavior into this flow.
-- `GET /social/connections/instagram/callback` consumes the state before processing the callback. It exchanges the code at `api.instagram.com/oauth/access_token`, validates the exact granted scopes, exchanges the short-lived token for a 60-day long-lived token, and reads `/me?fields=id,username`. Instagram Login itself limits this API to professional accounts; the returned user ID must match the ID from the code exchange. Tokens are stored only in the encrypted vault.
+- `GET /social/connections/instagram/callback` consumes the state before processing the callback. It exchanges the code at `api.instagram.com/oauth/access_token`, accepting either a flat token response or exactly one wrapped `data` entry, never an ambiguous combination. It requires explicit granted permissions including both requested scopes before exchanging the short-lived token for a 60-day long-lived token and reading `/me?fields=id,user_id,username`. Numeric IDs are parsed without JSON precision loss. The code-exchange `user_id` must match either the app-scoped `id` or the professional-account `user_id` from `/me`; the professional `user_id` is stored as `externalAccountId` because it is the ID used by `/{ig-id}/media` and webhook notifications. Missing/ambiguous token data or grants do not persist credentials. Instagram Login itself limits this API to professional accounts. Tokens are stored only in the encrypted vault.
 - A long-lived Instagram token is refreshed through `graph.instagram.com/refresh_access_token` when it is within seven days of expiry, while it is still valid. A provider rejection or already expired token requires reauthorization. The refresh request does not receive or expose a client secret.
 - `INSTAGRAM_OAUTH_CLIENT_ID`, `INSTAGRAM_OAUTH_CLIENT_SECRET`, `INSTAGRAM_OAUTH_REDIRECT_URI`, and `META_GRAPH_API_VERSION` are read at request time; they are not required at startup. Google/Meta credentials and access approvals are never part of a SocialAccount or API response. Live Meta app access/review is still pending.
 
 ### Facebook Login and explicit Page selection (Phase 1 local connection)
 
-- `GET /social/connections/facebook/authorize` creates a random, single-use five-minute `state` and requests `pages_show_list`, `pages_read_engagement`, `pages_read_user_content`, and `pages_manage_engagement` through the versioned Facebook Login dialog. Meta's documented server-side code flow uses `state`; the selected manual flow does not document PKCE.
-- `GET /social/connections/facebook/callback` consumes state, exchanges the code for a user token, exchanges that token for a long-lived user token, verifies all required grants through `/me/permissions`, then lists manageable Pages through `/me/accounts` with Page access tokens and tasks. The callback returns only a random five-minute `selectionId` and Page IDs/display names; it never connects every returned Page or exposes any token.
+- `GET /social/connections/facebook/authorize` creates a random, single-use five-minute `state` and requests `pages_show_list`, `pages_read_engagement`, `pages_read_user_content`, and `pages_manage_engagement` through the versioned Facebook Login dialog. When `FACEBOOK_OAUTH_CONFIG_ID` is configured — required for apps that only offer Facebook Login for Business — the dialog sends `config_id` instead of `scope`, and the granted permissions are the ones defined in that Meta dashboard configuration; the same four permissions must be enabled there. Meta's documented server-side code flow uses `state`; the selected manual flow does not document PKCE.
+- `GET /social/connections/facebook/callback` consumes state, exchanges the code for a user token, exchanges that token for a long-lived user token, verifies all required grants through `/me/permissions`, then lists manageable Pages through `/me/accounts` with Page access tokens and tasks. Meta may omit `expires_in` for tokens without reported expiry; the adapter accepts that as an unknown expiry while still requiring `access_token` and `token_type=bearer`, and the temporary user credential remains capped at five minutes regardless. The callback returns only a random five-minute `selectionId` and Page IDs/display names; it never connects every returned Page or exposes any token.
 - `POST /social/connections/facebook/select` accepts only the callback's `selectionId` and one listed `pageId`. The application re-reads Pages, requires the selected Page to retain the `MODERATE` task, stores only that Page-scoped access token in the encrypted vault, deletes the temporary encrypted user credential, and connects the tenant-scoped Facebook SocialAccount. Selection IDs are tenant-bound, single-use, and cannot select an unlisted Page.
-- `FACEBOOK_OAUTH_CLIENT_ID`, `FACEBOOK_OAUTH_CLIENT_SECRET`, `FACEBOOK_OAUTH_REDIRECT_URI`, and `META_GRAPH_API_VERSION` are read at request time and are not required at startup. Facebook Page tokens do not use the YouTube refresh behavior; if the Page token or underlying Page authorization is revoked/invalidated, the creator must reconnect. Live Meta App Review/access remains pending.
+- `FACEBOOK_OAUTH_CLIENT_ID`, `FACEBOOK_OAUTH_CLIENT_SECRET`, `FACEBOOK_OAUTH_REDIRECT_URI`, `FACEBOOK_OAUTH_CONFIG_ID` (optional; required for Facebook Login for Business apps), and `META_GRAPH_API_VERSION` are read at request time and are not required at startup. Facebook Page tokens do not use the YouTube refresh behavior; if the Page token or underlying Page authorization is revoked/invalidated, the creator must reconnect. Live Meta App Review/access remains pending.
 
 ### TikTok Business OAuth (Phase 1 local connection)
 
@@ -123,7 +159,7 @@ interface SocialCredentialVault {
 }
 
 interface SocialPublicationReader {
-  listPublications(account: SocialAccount, cursor?: string): Promise<PlatformPublicationPage>;
+  listPublications(account: SocialAccount, cursor?: string, pageSize?: 5 | 10 | 25): Promise<PlatformPublicationPage>;
 }
 
 interface PlatformCapabilityResolver {
@@ -141,9 +177,10 @@ Provider DTOs/cursors remain inside adapters; `nextCursor` is opaque to callers.
 
 1. Resolve the connected social account and verify its authorization.
 2. Check the exact platform's publication-read capability.
-3. Fetch pages through the platform adapter and normalize records into application contracts, preserving platform and external publication identifiers.
-4. Return pagination and partial/unsupported/failure outcomes without allowing one account's failure to hide successful results from other accounts.
-5. Keep provider DTOs, cursors, and pagination semantics inside the adapter; listing existing publications does not create Content or call a publishing operation.
+3. Fetch one provider page using the requested supported page size and opaque cursor, then normalize records into application contracts, preserving platform and external publication identifiers.
+4. Upsert the normalized page through `SocialPublicationRepository`, keyed by tenant, social account, and external publication ID. A repository failure is not reported as a successful synchronization; previously committed metadata is preserved.
+5. Return pagination and partial/unsupported/failure outcomes without allowing one account's failure to hide successful results from other accounts.
+6. Keep provider DTOs, cursors, and pagination semantics inside the adapter; listing existing publications does not create internal `Content`, sync comments, or call a publishing operation.
 
 This read workflow is a prerequisite for Phase 1 community management and is separate from the Phase 4 video-publishing flow below.
 
@@ -184,14 +221,14 @@ A scheduled item must not be dispatched before the requested time. Whether sched
 
 Apply Clean Code and TDD (Red-Green-Refactor): write or update a failing test before production changes, implement the smallest suitable change, then refactor with tests green. Every use case requires unit tests; critical user journeys require E2E coverage.
 
-- **Unit:** capability decision, publication independence, readiness/permission checks, idempotency behavior, retry orchestration, OAuth state replay/expiry, scope/identity validation, selected-Page authorization, credential cleanup, and tenant binding.
-- **Integration:** YouTube, Instagram Login, Facebook Login/Page-selection, and TikTok Business token boundaries use deterministic `fetch` doubles; vault tests cover encryption, expiry metadata, token rotation, and tenant/platform isolation. No test calls production providers or uses actual credentials.
-- **E2E:** YouTube, Instagram, Facebook, and TikTok callback routes use deterministic HTTP/application doubles; explicit Facebook Page selection and TikTok state validation are covered. Multi-destination publishing remains a Phase 4 journey.
+- **Unit:** capability decision, publication independence, readiness/permission checks, idempotency behavior, retry orchestration, OAuth state replay/expiry, scope/identity validation, selected-Page authorization, credential cleanup, tenant binding, and tenant-scoped disconnection.
+- **Integration:** YouTube publication listing filters only the documented deleted/unavailable placeholder while preserving valid items and cursors. YouTube, Instagram Login, Facebook Login/Page-selection, and TikTok Business token boundaries use deterministic `fetch` doubles; vault tests cover encryption, expiry metadata, token rotation, and tenant/platform isolation. Disconnection verifies the account, credential, and related-data cascades in a transaction. No test calls production providers or uses actual credentials.
+- **E2E:** YouTube, Instagram, Facebook, and TikTok callback routes use deterministic HTTP/application doubles; explicit Facebook Page selection, TikTok state validation, and connected-account disconnection are covered. Multi-destination publishing remains a Phase 4 journey.
 - Revalidate official provider requirements before production; do not treat the existing capability matrix as a substitute for that check.
 
 ## 11. Open Technical Decisions
 
-- TikTok Business app-generated authorization URL/configuration, live callback/state and refresh-flow verification, app access tier, and product/disconnection semantics for the documented account-token revoke endpoint; Google/Meta live App Review and test-client access; provider revocation handling for already-connected Meta accounts.
+- TikTok Business app-generated authorization URL/configuration, live callback/state and refresh-flow verification, app access tier, and whether a future provider-side revoke action is warranted; Google/Meta live App Review and test-client access; provider revocation handling for already-connected Meta accounts.
 - Per-platform media/metadata contracts and provider result reconciliation.
 - Publication status model and user-visible error taxonomy.
 - Application scheduler versus provider-native scheduling, timezone, edits, and cancellation.

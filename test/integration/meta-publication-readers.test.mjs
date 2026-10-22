@@ -35,11 +35,12 @@ test('Instagram publication reader lists normalized account-owned media with cur
     paging: { cursors: { after: 'ig-next' }, next: 'https://graph.instagram.com/next' },
   })], ['instagram_business_basic']);
 
-  const page = await reader.listPublications(instagram, 'ig-cursor');
+  const page = await reader.listPublications(instagram, 'ig-cursor', 10);
 
   assert.deepEqual(page, { items: [{ platform: 'instagram', externalPublicationId: 'ig-media-1', title: null, description: 'Episode', permalink: 'https://instagram.invalid/p/1', thumbnailUrl: 'https://cdn.invalid/1.jpg', publishedAt: '2026-10-14T12:00:00.000Z' }], nextCursor: 'ig-next' });
   assert.equal(requests[0].url.pathname, '/v22.0/ig-user-1/media');
   assert.equal(requests[0].url.searchParams.get('after'), 'ig-cursor');
+  assert.equal(requests[0].url.searchParams.get('limit'), '10');
   assert.equal(requests[0].options.headers.Authorization, 'Bearer meta-test-token');
 });
 
@@ -49,11 +50,12 @@ test('Facebook Pages publication reader lists authorized Page posts and denies m
     paging: { cursors: { after: 'fb-next' } },
   })], ['pages_read_engagement']);
 
-  const page = await reader.listPublications(facebook);
+  const page = await reader.listPublications(facebook, undefined, 25);
   assert.equal(page.items[0].externalPublicationId, 'page-post-1');
   assert.equal(page.items[0].description, 'Video post');
   assert.equal(page.nextCursor, 'fb-next');
   assert.equal(requests[0].url.pathname, '/v22.0/page-1/posts');
+  assert.equal(requests[0].url.searchParams.get('limit'), '25');
 
   const denied = createReader(FacebookPagesPublicationReader, [], []);
   await assert.rejects(denied.reader.listPublications(facebook), (error) => error instanceof SocialProviderError && error.code === 'SOCIAL_ACCOUNT_PERMISSION_DENIED');

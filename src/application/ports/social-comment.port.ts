@@ -1,6 +1,7 @@
 import type { SocialAccount, SocialPlatform } from '../../domain/social/social-account';
 
 export type ExternalReplyStatus = 'REPLIED' | 'NOT_REPLIED' | 'UNKNOWN';
+export type SocialCommentLikeAction = 'LIKE' | 'UNLIKE';
 
 export interface PlatformComment {
   readonly platform: SocialPlatform;
@@ -12,10 +13,21 @@ export interface PlatformComment {
   readonly text: string | null;
   readonly createdAt: string | null;
   readonly canReply: boolean;
+  readonly canLike: boolean;
+}
+
+export interface PlatformCreatorReply {
+  readonly platform: SocialPlatform;
+  readonly externalReplyId: string;
+  readonly externalCommentId: string;
+  readonly externalPublicationId: string;
+  readonly text: string | null;
+  readonly createdAt: string | null;
 }
 
 export interface PlatformCommentPage {
   readonly items: readonly PlatformComment[];
+  readonly creatorReplies: readonly PlatformCreatorReply[];
   readonly nextCursor: string | null;
 }
 
@@ -33,3 +45,9 @@ export interface SocialCommentResponder {
 }
 
 export type SocialCommentResponderRegistry = Partial<Record<SocialPlatform, SocialCommentResponder>>;
+
+export interface SocialCommentLiker {
+  setLike(account: SocialAccount, comment: PlatformComment, action: SocialCommentLikeAction): Promise<void>;
+}
+
+export type SocialCommentLikerRegistry = Partial<Record<SocialPlatform, SocialCommentLiker>>;

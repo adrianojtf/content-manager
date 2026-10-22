@@ -22,11 +22,24 @@ const input = {
   },
   analysis: {
     sentiment: 'NEUTRAL', emotion: 'CURIOSITY', intent: 'QUESTION', topic: 'MUSIC', entity: null,
-    spamScore: 0, toxicityScore: 0, engagementValue: 0.5, confidence: 0.92,
+    spamScore: 0, toxicityScore: 0, engagementValue: 0.5, continuationRequestProbability: 0.4, confidence: 0.92,
     rationale: 'The viewer asks a direct question.', provider: 'JEV', model: 'jev-model', schemaVersion: '1',
+    signals: {
+      intent: { confidence: 0.91, probabilities: { QUESTION: 0.91, PRAISE: 0.04, OTHER: 0.05 } },
+      engagement: { rawScore: 2.4, normalizedScore: 0.6, confidence: 0.87, probabilities: { 0: 0.1, 1: 0.2, 2: 0.3, 3: 0.3, 4: 0.1 }, legend: {} },
+      needsExternalFacts: { probability: 0.76 },
+      requestsContinuation: { probability: 0.4 },
+    },
+    usage: { inputTokens: 100, outputTokens: 20 },
   },
   language: 'pt-BR',
   toneProfile: { primaryTone: 'EMPATHETIC', modifiers: ['CONCISE'], customNote: 'Use gentle wording.' },
+  verifiedReleaseSchedule: {
+    status: 'ACTIVE',
+    daysOfWeek: ['MONDAY', 'WEDNESDAY'],
+    localTime: '20:30',
+    timeZone: 'America/Sao_Paulo',
+  },
 };
 
 function jsonResponse(body, status = 200) {
@@ -73,9 +86,51 @@ test('Gemini Flash-Lite sends one bounded structured request and returns provide
   const context = JSON.parse(body.contents[0].parts[0].text);
   assert.equal(context.commentText, 'Qual é o nome da música?');
   assert.deepEqual(context.responseToneProfile, input.toneProfile);
+  assert.deepEqual(context.verifiedReleaseSchedule, input.verifiedReleaseSchedule);
+  assert.deepEqual(context.commentAnalysis.signals, input.analysis.signals);
+  assert.equal(context.commentAnalysis.continuationRequestProbability, 0.4);
+  assert.equal('usage' in context.commentAnalysis, false);
+  assert.equal('provider' in context.commentAnalysis, false);
+  assert.equal('model' in context.commentAnalysis, false);
+  assert.match(body.systemInstruction.parts[0].text, /only when the comment concerns release timing/i);
+  assert.match(body.systemInstruction.parts[0].text, /never infer a schedule from a continuation request/i);
   assert.equal(body.contents[0].parts[0].text.includes('Viewer name'), false);
   assert.equal(requests[0].url.searchParams.has('key'), false);
   assert.equal(JSON.stringify(result).includes('gemini-test-secret'), false);
+});
+
+test('Gemini receives no inactive schedule day/time facts', async () => {
+  const { generator, requests } = createGenerator([modelResponse(generated)]);
+
+  await generator.generate({ ...input, verifiedReleaseSchedule: { status: 'DISABLED' } });
+
+  const body = JSON.parse(requests[0].init.body);
+  const context = JSON.parse(body.contents[0].parts[0].text);
+  assert.deepEqual(context.verifiedReleaseSchedule, { status: 'DISABLED' });
+});
+
+test('Gemini generator uses encrypted runtime credentials and data policy', async () => {
+  const settings = {
+    get: async () => ({
+      jevApiKey: null,
+      geminiApiKey: 'saved-gemini-secret',
+      geminiDataUsePolicy: 'paid-tier',
+      openaiApiKey: null,
+    }),
+  };
+  const requests = [];
+  const generator = new GeminiFlashLiteResponseSuggestionGenerator(
+    {},
+    async (url, init) => {
+      requests.push({ url, init });
+      return modelResponse(generated);
+    },
+    settings,
+  );
+
+  await generator.generate(input);
+
+  assert.equal(requests[0].init.headers['x-goog-api-key'], 'saved-gemini-secret');
 });
 
 test('Gemini credentials, model and free-tier data-use acknowledgement remain lazy', async () => {

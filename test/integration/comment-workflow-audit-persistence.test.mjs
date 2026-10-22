@@ -45,6 +45,8 @@ async function createAuditRepository() {
     '012_add_creator_authored_responses.sql',
     '013_persist_comment_reply_status.sql',
     '014_add_tiktok_business_platform.sql',
+    '017_create_social_publications_and_comment_replies.sql',
+    '019_add_app_comment_like_state.sql',
   ]) {
     await pool.query(await readFile(path.join(migrationDirectory, migration), 'utf8'));
   }
@@ -55,7 +57,7 @@ async function createAuditRepository() {
   const comments = new PostgresSocialCommentRepository(database);
   await comments.upsertPage(account, 'video-1', [{
     platform: 'youtube', externalCommentId: 'comment-1', externalThreadId: 'thread-1', externalPublicationId: 'video-1',
-    authorDisplayName: 'Viewer', text: 'Question', createdAt: syncedAt, canReply: true,
+    authorDisplayName: 'Viewer', text: 'Question', createdAt: syncedAt, canReply: true, canLike: false,
   }], syncedAt, expiresAt);
   return { pool, events: new PostgresCommentWorkflowEventRepository(database) };
 }

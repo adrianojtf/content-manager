@@ -42,15 +42,22 @@ For a Portuguese, field-by-field explanation of Auth0 configuration, Discovery m
 
 ## Local PostgreSQL
 
-Copy `.env.example` to `.env.local` and adjust `DATABASE_URL` if your local PostgreSQL role requires a username or password. The default URL targets `localhost:5432/content_manager` and uses the local PostgreSQL role selected by `pg`. Start the API with `npm run start:local`; startup checks the connection with `SELECT 1`, and shutdown closes the pool. Migrations are not applied automatically. The Phase 1 pilot uses the reserved local tenant seeded by migration 005 and binds the API to `127.0.0.1`; it needs no OIDC/Auth0 settings. `GET /social/publications` lists connected-account publications; it is empty until an account is connected. `POST /social/accounts/{accountId}/publications/{publicationId}/comments/sync` loads and stores one on-demand comment page; `GET /social/accounts/{accountId}/publications/{publicationId}/comments` returns its persisted comment/reply statuses. `POST /social/workflow-batches` runs sync/classify/generate in scope `comment`, `publication`, `account`, or selected `platform`, serially with an outcome per comment; `sync` cannot use a cross-platform `all` scope; `GET /social/workflow-batches/{batchOperationId}/events` returns grouped audit events. `GET /social/accounts/{accountId}/comments/{externalCommentId}/workflow` returns one comment's history; correction/edit routes append human revisions. Creator-authored response text can be saved independently at `POST /social/accounts/{accountId}/comments/{externalCommentId}/responses/manual` and revised under `/responses/manual/{responseEventId}/revisions`; neither requires comment analysis. AI generation still requires a prior comment analysis. Response evaluation is optional, manually requested at `POST /social/accounts/{accountId}/comments/{externalCommentId}/revisions/{revisionEventId}/evaluation`, and advisory; sending does not require or get blocked by its result. The per-comment `POST .../revisions/{revisionEventId}/send` action sends the exact latest saved response text. `GET/PUT /social/accounts/{accountId}/response-tone` reads or changes that account's AI-response tone profile; updates affect future AI generations only, and generated suggestion events preserve the profile used. The JEV response evaluator is isolated behind a port and reads `JEV_RESPONSE_EVALUATION_URL` lazily; live JEV endpoint/auth/schema remains unverified/open. The CreatorDesk comments frontend is served from `/` by the API and uses the same-origin routes; it shows evaluation as optional when the workflow prerequisites are met. There is no batch-send operation; ambiguous attempts are not retried and the version cannot be sent again. Apply migrations 011–015 before using manual reply sends, reply-status fields, TikTok Business accounts, or account-scoped response tone settings. Linked comment/audit text expires after 30 days.
+### Como executar localmente
 
-Create the database if it does not exist:
+Requisitos: Node.js 20.6 ou superior, npm e PostgreSQL local em execução. No terminal, na raiz do repositório:
+
+```sh
+npm ci
+cp .env.example .env.local
+```
+
+Se necessário, edite `DATABASE_URL` em `.env.local` para informar usuário e senha. O valor padrão usa `localhost:5432/content_manager` e o usuário local do PostgreSQL. Crie o banco:
 
 ```sh
 createdb --host=127.0.0.1 --port=5432 --username="$USER" content_manager
 ```
 
-If your PostgreSQL role is `postgres`, use `--username=postgres` instead. For a fresh database, apply the SQL migrations once, in order:
+Se seu usuário PostgreSQL for `postgres`, substitua `"$USER"` por `postgres`. Aplique as migrações uma única vez, em ordem, para um banco novo:
 
 ```sh
 set -e
@@ -62,7 +69,59 @@ for migration in src/infrastructure/persistence/migrations/*.sql; do
 done
 ```
 
-If authentication needs a password, use your local `.pgpass` or configure it in your ignored `.env.local`; do not commit credentials.
+Inicie a API e a interface CreatorDesk:
+
+```sh
+npm run start:local
+```
+
+Abra `http://127.0.0.1:3000` no navegador. O servidor fica acessível apenas nesta máquina; encerre-o com `Ctrl+C`. As configurações OAuth e as chaves dos provedores de IA são opcionais para iniciar a aplicação. Para executar a suíte automatizada (não requer serviços externos nem banco de dados de produção), use `npm test` em outro terminal.
+
+### HTTPS local para OAuth do Instagram
+
+O Instagram pode recusar o cadastro de callbacks HTTP. Para usar `https://localhost:3000/social/connections/instagram/callback` sem expor a API na rede, gere um certificado local com SAN para `localhost` caso ainda não tenha um (na raiz do projeto):
+
+```sh
+mkdir -p ops/local-https/certs
+(umask 077; openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+  -keyout ops/local-https/certs/localhost.key.pem \
+  -out ops/local-https/certs/localhost.crt.pem \
+  -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1")
+```
+
+Os arquivos em `ops/local-https/certs/` são ignorados pelo Git. O navegador deve confiar no certificado autossinado (ou ter uma exceção local) antes de completar o OAuth; não desabilite a verificação TLS global. Em `.env.local`, configure somente os caminhos e o callback, sem compartilhar credenciais:
+
+```dotenv
+PORT=3000
+LOCAL_HTTPS_KEY_PATH=ops/local-https/certs/localhost.key.pem
+LOCAL_HTTPS_CERT_PATH=ops/local-https/certs/localhost.crt.pem
+INSTAGRAM_OAUTH_REDIRECT_URI=https://localhost:3000/social/connections/instagram/callback
+```
+
+Cadastre exatamente o mesmo callback em **Instagram Login → Business Login settings → Valid OAuth Redirect URIs**, reinicie com `npm run start:local` e abra `https://localhost:3000/` (não `http` nem `127.0.0.1`). O popup OAuth exige que interface e callback tenham a mesma origem. Antes de conectar outras redes a partir dessa interface, registre e configure os callbacks HTTPS correspondentes também. Sem os dois caminhos TLS, o servidor continua em HTTP; com apenas um, falha ao iniciar. O HTTPS local continua vinculado a `127.0.0.1`, não adiciona login de usuário e não pode ser usado simultaneamente com o proxy LAN existente, que espera HTTP em `127.0.0.1:3000`. O certificado local não substitui as aprovações da Meta.
+
+The Phase 1 pilot uses the reserved local tenant seeded by migration 005 and binds the API to `127.0.0.1`; it needs no OIDC/Auth0 settings. `GET /social/publications` lists connected-account publications and persists metadata for each successfully fetched page; it does not backfill unrequested history or download video files. `POST /social/accounts/{accountId}/publications/{publicationId}/comments/sync` loads and stores one on-demand comment page, including only direct replies reliably attributed to the connected account owner; `GET /social/accounts/{accountId}/publications/{publicationId}/comments` returns persisted comments and creator replies. `POST /social/workflow-batches` runs sync/classify/generate in scope `comment`, `publication`, `account`, or selected `platform`, serially with an outcome per comment; `sync` cannot use a cross-platform `all` scope; `GET /social/workflow-batches/{batchOperationId}/events` returns grouped audit events. `GET /social/accounts/{accountId}/comments/{externalCommentId}/workflow` returns one comment's history; correction/edit routes append human revisions. Creator-authored response text can be saved independently at `POST /social/accounts/{accountId}/comments/{externalCommentId}/responses/manual` and revised under `/responses/manual/{responseEventId}/revisions`; neither requires comment analysis. AI generation still requires a prior comment analysis. Response evaluation is optional, manually requested at `POST /social/accounts/{accountId}/comments/{externalCommentId}/revisions/{revisionEventId}/evaluation`, and advisory; sending does not require or get blocked by its result. The per-comment `POST .../revisions/{revisionEventId}/send` action sends the exact latest saved response text. `GET/PUT /social/accounts/{accountId}/response-tone` reads or changes that account's AI-response tone profile; updates affect future AI generations only, and generated suggestion events preserve the profile used. `GET/PUT /social/accounts/{accountId}/verified-release-schedule` reads or explicitly confirms that account's weekly release schedule as response context; it is not a scheduler and never sends responses. The TypeSafe Jev evaluator is isolated behind an application port and uses the documented System One contract; live credit-backed smoke testing remains opt-in. The CreatorDesk comments frontend is served from `/` by the API and uses the same-origin routes; it shows evaluation as optional when the workflow prerequisites are met. There is no dedicated batch-send endpoint: the semi-automatic dialog invokes the existing per-comment send route sequentially only for individually approved responses after a final confirmation; it continues after individual failures, stops on provider rate limits, and never retries ambiguous attempts. Apply migrations 011–019 in order before using comment sync, comment likes, manual reply sends, reply-status fields, synchronized publication metadata, creator replies, TikTok Business accounts, account-scoped response tone settings, Preferences-managed AI credentials, or verified release schedule settings. Linked comment/audit text expires after 30 days.
+
+### Optional LAN access through Nginx
+
+The API stays bound to `127.0.0.1`. On Linux, an optional Nginx container can listen on the LAN and proxy requests to that loopback API. The proxy is separate from the API, so it can be started and stopped independently:
+
+1. Choose a stable LAN hostname that resolves to this machine on the other device(s), and create a TLS certificate whose Subject Alternative Name includes that hostname. The certificate must be trusted by the client browser. Place the full chain at `ops/lan-proxy/certs/fullchain.pem` and the private key at `ops/lan-proxy/certs/privkey.pem`; these files are ignored by Git.
+2. Copy `ops/lan-proxy/.env.example` to `ops/lan-proxy/.env`. Set `LAN_PUBLIC_HOST` to the chosen hostname and `LAN_ALLOWED_CIDR` to the trusted Wi-Fi subnet. Defaults reflect the current host address (`192.168.15.9`) and its common `/24` subnet; adjust them if the network differs.
+3. Start or stop the proxy:
+
+   ```sh
+   docker compose --env-file ops/lan-proxy/.env -f ops/lan-proxy/compose.yaml up -d
+   docker compose --env-file ops/lan-proxy/.env -f ops/lan-proxy/compose.yaml down
+   ```
+
+   The HTTPS address is `https://<LAN_PUBLIC_HOST>:8443`; HTTP on port `8080` redirects there. The Compose service uses Linux host networking and forwards the original path/query to `127.0.0.1:3000`. Restrict these listener ports in the host firewall as well as in Nginx's CIDR allowlist.
+4. For each social provider, register the exact HTTPS callback URL and set the matching runtime redirect URI, for example `https://<LAN_PUBLIC_HOST>:8443/social/connections/youtube/callback`. Repeat for Instagram, Facebook, and TikTok; TikTok's configured authorization URL must also contain its matching callback. Nginx preserves the path/query and does not rewrite provider `redirect_uri` values. A provider may reject a private hostname/IP or local certificate; use a provider-accepted HTTPS hostname/certificate if so.
+
+This is only social-provider OAuth; the pilot has no end-user login. Anyone on the allowed subnet can use the unauthenticated API, so only enable the proxy on a trusted network. Keep the API running as one process during each OAuth flow because its state is held in memory.
+
+If PostgreSQL authentication needs a password, use your local `.pgpass` or configure it in your ignored `.env.local`; do not commit credentials.
 
 When connecting social accounts, add `SOCIAL_CREDENTIAL_ENCRYPTION_KEY` to the local secret store or `.env.local`. Generate a 32-byte base64 key with `openssl rand -base64 32`. The key is read only when credentials are stored or resolved, so it is not required for API startup; losing/changing it makes stored credentials unreadable.
 
@@ -75,15 +134,15 @@ Provider OAuth settings are read only when a connection request runs; missing ID
 
 ## Intelligence Providers
 
-Comment classification uses `JEV_COMMENT_EVALUATION_URL` as the complete HTTPS endpoint. Optionally set `JEV_API_KEY`; the default auth scheme is `Authorization: Bearer`, configurable with `JEV_API_KEY_HEADER` and `JEV_API_KEY_PREFIX`. JEV settings are read only when classification is requested; the actual JEV endpoint/auth contract must be supplied and verified before live calls.
+Jev uses TypeSafe System One through the single endpoint `POST https://api.typesafe.ai/v1/systemone`; the application sends a `model`, `state`, and typed `questions` and maps the structured `answers`. There are no separate comment/response URLs or configurable auth-header fields. Preferences stores one write-only TypeSafe/Jev API key; `GET /ai/provider-access` returns key-presence flags only and `PUT` never returns secrets. Runtime configuration prefers `TYPESAFE_API_KEY` and keeps `JEV_API_KEY` as a legacy fallback.
 
-Response suggestions can use Gemini or OpenAI. `GET /ai/response-generation/settings` returns the active provider/model and allowlisted choices; `PUT` accepts only `{ "provider": "google"|"openai", "model": "..." }`. The pilot setting is global; API keys are never stored in this setting and the future `updated_by_admin_user_id` association is reserved for Phase 3. These local, unauthenticated settings endpoints are available only while the API is bound to `127.0.0.1`.
+Response suggestions can use Gemini or OpenAI. `GET /ai/response-generation/settings` returns the active provider/model and allowlisted choices; `PUT` accepts only `{ "provider": "google"|"openai", "model": "..." }`. API keys are stored separately from the model selector. These local, unauthenticated settings endpoints are available only while the API is bound to `127.0.0.1`.
 
-The selector currently offers `google/gemini-3.5-flash-lite` and `openai/gpt-6-luna`; model choice is persisted by `GET/PUT /ai/response-generation/settings`. Gemini requires `GEMINI_API_KEY` and an explicit `GEMINI_DATA_USE_POLICY=free-tier-acknowledged` or `paid-tier`. Google's Free tier currently charges no input/output token fees for eligible models but may use submitted content to improve Google products. OpenAI requires `OPENAI_API_KEY` and GPT-6 Luna is billed by token, not free. Verify current pricing/data terms before sending real comment or response text. Provider keys are read only on an explicit generation request; neither provider configuration is required for API startup. The global provider/model selector remains API-only; the CreatorDesk comments frontend does not change it.
+Preferences lets the local operator set the TypeSafe/Jev API key, Gemini/OpenAI API keys, and the Gemini data-use policy; text-generation model choice is persisted through `GET/PUT /ai/response-generation/settings`. API keys use write-only password inputs and are encrypted in PostgreSQL with `SOCIAL_CREDENTIAL_ENCRYPTION_KEY`; key values are never returned to the browser. Environment variables remain fallback values. The comments interface has complete `pt-BR`, `en-US`, and `es-ES` catalogs; select the interface language in Preferences. Every requested AI response suggestion creates a separately selectable variant in all three languages. Google's Free tier may use submitted content to improve Google products; OpenAI GPT-6 Luna is billed by token. Verify current pricing/data terms before sending real comment or response text. Provider configuration remains optional at application startup.
 
 ## CreatorDesk Comments Frontend
 
-The API serves the CreatorDesk comments interface from `web/` at `/` on the same loopback origin. It uses the community API routes directly: publication listing and pagination, on-demand comment sync, per-comment classification/generation, account response tone, append-only response revisions, optional response evaluation, and explicit per-comment send. Network batches show their independent outcomes and never send replies. The frontend does not include sample social content or fake provider results; it presents loading, empty, unsupported, and failure states from the API. User-facing copy uses semantic keys with the current `pt-BR` catalog; authenticated user/tenant locale resolution remains deferred to FND-04. The screen operates on accounts already connected through the OAuth API; social account authorization and Facebook Page selection remain outside this screen.
+The API serves the CreatorDesk comments interface from `web/` at `/` on the same loopback origin. It uses the community API routes directly: publication listing and cursor pagination (5 videos per account by default, with 10/25 choices), page-scoped on-demand comment sync, per-comment classification/generation, account response tone, append-only response revisions, optional response evaluation, explicit per-comment send, and a separately confirmed send-all action in the semi-automatic video dialog for individually approved rows. The main sync control processes only visible videos sequentially and reports per-video progress/outcomes; failures show localized explanations based on platform and stable error code, with a generic fallback. It never silently starts a whole-network sync. The frontend does not include sample social content or fake provider results; it presents loading, empty, unsupported, and error states from the API. All interface text is cataloged in `pt-BR`, `en-US`, and `es-ES`; authenticated user/tenant locale resolution remains deferred to FND-04. AI response suggestions are generated separately in all three languages, and the creator reviews/selects one variant before editing or sending. Profile settings list and connect accounts, require explicit Facebook Page selection, and provide a confirmed local disconnect action that removes account-scoped data and credentials without revoking the provider grant. OAuth credentials remain in server runtime configuration and are never entered in the UI.
 
 ## Phase 1 Community Workflow
 
@@ -96,21 +155,21 @@ Classify Each Comment with JEV (one, one video, or selected/all)
    ↓
 Optionally Correct JEV Labels/Scores (append-only audit)
    ↓
-Generate One Gemini Flash-Lite Suggestion per Comment
+Generate Separate pt-BR, en-US, and es-ES Suggestions with Gemini or OpenAI
    ↓
 Creator Reviews and Edits (AI and manual revisions retained)
    ↓
 Evaluate the Final Revision with JEV
    ↓
-Creator Manually Sends Each Reply Separately
+Creator Sends Individually or Confirms Sending Approved Replies
 ```
 
-Every batch action tracks independent per-comment outcomes. A batch never sends replies. Analytics/dashboard and video publishing remain later roadmap phases.
+Sync/classify/generate batches track independent per-comment outcomes and never send replies. The semi-automatic dialog has a separate send-all action: it requires per-row approval and final confirmation, calls the existing per-comment route sequentially, continues after individual failures, and stops on a platform rate limit. Analytics/dashboard and video publishing remain later roadmap phases.
 
 ## Current Community API Slice
 
 1. Connect supported social accounts through their independent OAuth API flows.
 2. List existing publications and on-demand comments across supported networks.
-3. Classify a selected comment through JEV and request a response suggestion in an explicit language.
+3. Classify a selected comment through JEV and generate separate Portuguese, English, and Spanish response suggestions.
 4. Review append-only workflow history, correct JEV labels/scores, and save manual or edited response revisions.
-5. Optionally evaluate the final saved revision and manually send it per comment; evaluation remains advisory.
+5. Optionally evaluate the final saved revision and send it individually or through the separately confirmed send-all action for individually approved replies; evaluation remains advisory.

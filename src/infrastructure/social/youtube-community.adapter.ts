@@ -1,4 +1,4 @@
-import type { SocialCommentReader, SocialCommentResponder, PlatformComment, PlatformCommentPage, PlatformCommentReply } from '../../application/ports/social-comment.port';
+import type { SocialCommentReader, SocialCommentResponder, PlatformComment, PlatformCommentPage, PlatformCommentReply, PlatformCreatorReply } from '../../application/ports/social-comment.port';
 import type { YouTubeAccountCredentialProvider } from '../../application/ports/youtube-account-credential-provider.port';
 import { SocialProviderError } from '../../application/social/social-provider-error';
 import { YOUTUBE_READ_SCOPE, YOUTUBE_REPLY_SCOPE } from '../../application/ports/youtube-oauth.port';
@@ -7,7 +7,13 @@ import type { SocialAccount } from '../../domain/social/social-account';
 const youtubeApi = 'https://www.googleapis.com/youtube/v3';
 
 interface YouTubeCommentReply {
-  readonly snippet?: { readonly authorChannelId?: { readonly value?: unknown } };
+  readonly id?: unknown;
+  readonly snippet?: {
+    readonly authorChannelId?: { readonly value?: unknown };
+    readonly textDisplay?: unknown;
+    readonly textOriginal?: unknown;
+    readonly publishedAt?: unknown;
+  };
 }
 
 interface YouTubeCommentThread {
@@ -64,8 +70,12 @@ export class YouTubeCommunityAdapter implements SocialCommentReader, SocialComme
     if (!Array.isArray(payload.items) || (payload.nextPageToken !== undefined && typeof payload.nextPageToken !== 'string')) {
       throw new SocialProviderError('SOCIAL_PROVIDER_RESPONSE_INVALID');
     }
+    if (payload.items.some((thread) => typeof thread !== 'object' || thread === null)) {
+      throw new SocialProviderError('SOCIAL_PROVIDER_RESPONSE_INVALID');
+    }
     return {
       items: payload.items.map((thread) => this.normalizeComment(account, publicationId, thread)),
+      creatorReplies: payload.items.flatMap((thread) => this.normalizeCreatorReplies(account, publicationId, thread)),
       nextCursor: payload.nextPageToken || null,
     };
   }
@@ -200,7 +210,8 @@ export class YouTubeCommunityAdapter implements SocialCommentReader, SocialComme
     }
     const replies = thread.replies?.comments;
     const creatorReplied = Array.isArray(replies)
-      && replies.some((reply) => reply.snippet?.authorChannelId?.value === account.externalAccountId);
+      && replies.some((reply) => typeof reply === 'object' && reply !== null
+        && reply.snippet?.authorChannelId?.value === account.externalAccountId);
     return {
       platform: 'youtube',
       externalCommentId: topLevelComment.id,
@@ -210,11 +221,38 @@ export class YouTubeCommunityAdapter implements SocialCommentReader, SocialComme
       text: this.optionalText(topLevelComment.snippet?.textDisplay),
       createdAt: this.optionalText(topLevelComment.snippet?.publishedAt),
       canReply: account.platform === 'youtube' && snippet.canReply === true,
+      canLike: false,
       externalReplyStatus: snippet.totalReplyCount === 0 ? 'NOT_REPLIED' : creatorReplied ? 'REPLIED' : 'UNKNOWN',
     };
   }
 
+  private normalizeCreatorReplies(account: SocialAccount, publicationId: string, thread: YouTubeCommentThread): readonly PlatformCreatorReply[] {
+    const parentCommentId = thread.snippet?.topLevelComment?.id;
+    const replies = thread.replies?.comments;
+    if (typeof parentCommentId !== 'string' || !parentCommentId || !Array.isArray(replies)) return [];
+    return replies.flatMap((reply): PlatformCreatorReply[] => {
+      if (typeof reply !== 'object' || reply === null
+        || reply.snippet?.authorChannelId?.value !== account.externalAccountId
+        || typeof reply.id !== 'string' || !reply.id.trim()) {
+        return [];
+      }
+      return [{
+        platform: 'youtube',
+        externalReplyId: reply.id,
+        externalCommentId: parentCommentId,
+        externalPublicationId: publicationId,
+        text: this.optionalText(reply.snippet.textDisplay) ?? this.optionalText(reply.snippet.textOriginal),
+        createdAt: this.isoTimestamp(reply.snippet.publishedAt),
+      }];
+    });
+  }
+
   private optionalText(value: unknown): string | null {
     return typeof value === 'string' && value ? value : null;
+  }
+
+  private isoTimestamp(value: unknown): string | null {
+    if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) return null;
+    return new Date(value).toISOString();
   }
 }

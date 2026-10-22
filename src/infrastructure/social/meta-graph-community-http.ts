@@ -23,10 +23,14 @@ export class MetaGraphCommunityHttpClient {
     return this.request(account, path, 'POST', body, scopes, true);
   }
 
+  delete(account: SocialAccount, path: string, scopes: readonly string[]): Promise<Record<string, unknown>> {
+    return this.request(account, path, 'DELETE', {}, scopes, true);
+  }
+
   private async request(
     account: SocialAccount,
     path: string,
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE',
     parameters: Readonly<Record<string, string>>,
     scopes: readonly string[],
     write: boolean,
@@ -46,9 +50,9 @@ export class MetaGraphCommunityHttpClient {
     if (!write) {
       for (const [key, value] of Object.entries(parameters)) url.searchParams.set(key, value);
     }
-    const request: RequestInit = write
-      ? { method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(parameters).toString() }
-      : { method: 'GET', headers: { Authorization: `Bearer ${accessToken}` } };
+    const request: RequestInit = method === 'POST'
+      ? { method, headers: { Authorization: `Bearer ${accessToken}`, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(parameters).toString() }
+      : { method, headers: { Authorization: `Bearer ${accessToken}` } };
     let response: globalThis.Response;
     try {
       response = await this.fetcher(url.toString(), request);
@@ -56,6 +60,7 @@ export class MetaGraphCommunityHttpClient {
       throw new SocialProviderError(write ? 'SOCIAL_PROVIDER_RESULT_AMBIGUOUS' : 'SOCIAL_PROVIDER_UNAVAILABLE');
     }
     if (!response.ok) this.mapHttpError(response.status, write);
+    if (response.status === 204) return {};
     let payload: Record<string, unknown>;
     try {
       payload = await response.json() as Record<string, unknown>;

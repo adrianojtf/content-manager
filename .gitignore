@@ -4,3 +4,6 @@ dist-e2e/
 .env
 .env.*
 !.env.example
+ops/lan-proxy/certs/*
+!ops/lan-proxy/certs/.gitkeep
+ops/local-https/certs/*

@@ -1,5 +1,6 @@
 import { Body, Controller, Get, HttpException, Param, Post } from '@nestjs/common';
 import type { CommentWorkflowAuditErrorCode } from '../../application/social/comment-workflow-audit-error';
+import type { VerifiedReleaseScheduleErrorCode } from '../../application/social/verified-release-schedule-error';
 import {
   CorrectCommentAnalysis,
   ListCommentWorkflow,
@@ -145,7 +146,7 @@ export class CommentWorkflowAuditController {
 
   private throwHttpError(error: unknown): never {
     const code = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' ? error.code : null;
-    const statusByCode: Partial<Record<CommentWorkflowAuditErrorCode, number>> = {
+    const statusByCode: Partial<Record<CommentWorkflowAuditErrorCode | VerifiedReleaseScheduleErrorCode, number>> = {
       COMMENT_NOT_FOUND: 404,
       COMMENT_ANALYSIS_NOT_FOUND: 404,
       RESPONSE_SUGGESTION_NOT_FOUND: 404,
@@ -162,6 +163,10 @@ export class CommentWorkflowAuditController {
       MANUAL_REPLY_ATTEMPT_FAILED: 502,
       COMMENT_WORKFLOW_EVENT_INVALID: 400,
       COMMENT_WORKFLOW_EVENT_PARENT_NOT_FOUND: 404,
+      VERIFIED_RELEASE_SCHEDULE_INVALID: 400,
+      VERIFIED_RELEASE_SCHEDULE_UNAVAILABLE: 503,
+      VERIFIED_RELEASE_SCHEDULE_DATA_INVALID: 500,
+      VERIFIED_RELEASE_SCHEDULE_FAILED: 500,
     };
     if (code === 'SOCIAL_ACCOUNT_ID_INVALID') {
       throw new HttpException({ code }, 400);

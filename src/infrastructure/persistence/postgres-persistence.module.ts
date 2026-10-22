@@ -3,15 +3,19 @@ import type { Pool, PoolConfig } from 'pg';
 import type { RelationalDatabase } from '../../application/ports/relational-database.port';
 import type { SocialCredentialVault } from '../../application/ports/social-credential-vault.port';
 import type { SocialAccountRepository } from '../../application/ports/social-account-repository.port';
+import type { SocialAccountDisconnector } from '../../application/ports/social-account-disconnector.port';
 import type { SocialPublicationReader } from '../../application/ports/social-publication-reader.port';
-import type { SocialCommentReader, SocialCommentResponder, SocialCommentResponderRegistry } from '../../application/ports/social-comment.port';
+import type { SocialPublicationRepository } from '../../application/ports/social-publication-repository.port';
+import type { SocialCommentLiker, SocialCommentReader, SocialCommentResponder, SocialCommentResponderRegistry } from '../../application/ports/social-comment.port';
 import type { SocialCommentRepository } from '../../application/ports/social-comment-repository.port';
 import type { CommentWorkflowEventRepository } from '../../application/ports/comment-workflow-event-repository.port';
 import type { CommentEvaluator } from '../../application/ports/comment-evaluator.port';
 import type { ResponseEvaluator } from '../../application/ports/response-evaluator.port';
 import type { ResponseSuggestionGenerator } from '../../application/ports/response-suggestion-generator.port';
 import type { ResponseGenerationSettingsRepository } from '../../application/ports/response-generation-settings.repository.port';
-import type { ResponseToneSettingsRepository } from '../../application/ports/response-tone-settings.repository.port';
+import type { AIProviderSettingsRepository } from '../../application/ports/ai-provider-settings.repository.port';
+import type { ResponseToneSettingsRepository, TenantResponseToneSettingsRepository } from '../../application/ports/response-tone-settings.repository.port';
+import type { TenantVerifiedReleaseScheduleRepository, VerifiedReleaseScheduleRepository } from '../../application/ports/verified-release-schedule.repository.port';
 import type { BatchOperationIdGenerator } from '../../application/ports/batch-operation-id-generator.port';
 import type { ManualReplyAttemptIdGenerator } from '../../application/ports/manual-reply-attempt-id-generator.port';
 import type { YouTubeAccountCredentialProvider, YouTubeAccessTokenRefresher } from '../../application/ports/youtube-account-credential-provider.port';
@@ -29,13 +33,18 @@ import { SelectFacebookPage } from '../../application/social/select-facebook-pag
 import { BeginTikTokBusinessOAuth } from '../../application/social/begin-tiktok-business-oauth';
 import { CompleteTikTokBusinessOAuth } from '../../application/social/complete-tiktok-business-oauth';
 import { ConnectSocialAccount } from '../../application/social/connect-social-account';
+import { ListConnectedSocialAccounts } from '../../application/social/list-connected-social-accounts';
+import { DisconnectSocialAccount } from '../../application/social/disconnect-social-account';
 import { ListSocialPublications, type SocialPublicationReaderRegistry } from '../../application/social/list-social-publications';
 import { ListPublicationComments, SyncPublicationComments, type SocialCommentReaderRegistry } from '../../application/social/sync-publication-comments';
+import { GetCommentSummary } from '../../application/social/comment-summary';
+import { SetCommentLike } from '../../application/social/set-comment-like';
 import { EvaluateComment, EvaluateResponseSuggestion, GenerateCommentResponseSuggestion } from '../../application/social/comment-intelligence.usecases';
 import { SendManualCommentReply } from '../../application/social/send-manual-comment-reply';
 import { ListCommentWorkflowBatchEvents, RunCommentWorkflowBatch } from '../../application/social/run-comment-workflow-batch';
 import { ConfiguredResponseSuggestionGenerator, GetResponseGenerationSettings, UpdateResponseGenerationSettings } from '../../application/social/response-generation-settings';
-import { GetAccountResponseToneSettings, UpdateAccountResponseToneSettings } from '../../application/social/response-tone-settings';
+import { GetAccountResponseToneSettings, GetTenantResponseToneSettings, UpdateAccountResponseToneSettings, UpdateTenantResponseToneSettings } from '../../application/social/response-tone-settings';
+import { GetTenantVerifiedReleaseSchedule, GetVerifiedReleaseSchedule, UpdateTenantVerifiedReleaseSchedule, UpdateVerifiedReleaseSchedule } from '../../application/social/verified-release-schedule';
 import {
   CorrectCommentAnalysis,
   ListCommentWorkflow,
@@ -48,11 +57,17 @@ import {
 } from '../../application/social/comment-workflow-audit';
 import { LocalPilotTenantContext } from './local-pilot-tenant-context';
 import { PostgresSocialAccountRepository } from './postgres-social-account.repository';
+import { PostgresSocialAccountDisconnector } from './postgres-social-account-disconnector';
+import { PostgresSocialPublicationRepository } from './postgres-social-publication.repository';
 import { PostgresSocialCredentialVault } from './postgres-social-credential-vault';
 import { PostgresSocialCommentRepository } from './postgres-social-comment.repository';
 import { PostgresCommentWorkflowEventRepository } from './postgres-comment-workflow-event.repository';
 import { PostgresResponseGenerationSettingsRepository } from './postgres-response-generation-settings.repository';
+import { PostgresAIProviderSettingsRepository } from './postgres-ai-provider-settings.repository';
 import { PostgresSocialAccountResponseToneSettingsRepository } from './postgres-social-account-response-tone-settings.repository';
+import { PostgresTenantResponseToneSettingsRepository } from './postgres-tenant-response-tone-settings.repository';
+import { PostgresVerifiedReleaseScheduleRepository } from './postgres-verified-release-schedule.repository';
+import { PostgresTenantVerifiedReleaseScheduleRepository } from './postgres-tenant-verified-release-schedule.repository';
 import { UuidSocialAccountIdGenerator } from './uuid-social-account-id-generator';
 import { UuidBatchOperationIdGenerator } from './uuid-batch-operation-id-generator';
 import { UuidManualReplyAttemptIdGenerator } from './uuid-manual-reply-attempt-id-generator';
@@ -72,13 +87,16 @@ import { TikTokBusinessCommunityAdapter } from '../social/tiktok-business-commun
 import { InstagramCommunityAdapter } from '../social/instagram-community.adapter';
 import { FacebookPagesCommunityAdapter } from '../social/facebook-pages-community.adapter';
 import { PlatformSocialCommentResponder } from '../social/platform-social-comment-responder';
+import { PlatformSocialCommentLiker } from '../social/platform-social-comment-liker';
 import { YouTubeOAuthClient } from '../social/youtube-oauth-client';
 import { YouTubePublicationReader } from '../social/youtube-publication-reader';
 import { TikTokBusinessPublicationReader } from '../social/tiktok-business-publication-reader';
+import { GetAIProviderAccessStatus, UpdateAIProviderAccessSettings } from '../../application/social/ai-provider-access-settings';
 import { InstagramPublicationReader } from '../social/instagram-publication-reader';
 import { FacebookPagesPublicationReader } from '../social/facebook-pages-publication-reader';
 import { JevCommentEvaluator } from '../intelligence/jev-comment-evaluator';
 import { JevResponseEvaluator } from '../intelligence/jev-response-evaluator';
+import { TypeSafeSystemOneClient } from '../intelligence/typesafe-system-one.client';
 import { GeminiFlashLiteResponseSuggestionGenerator } from '../intelligence/gemini-flash-lite-response-suggestion-generator';
 import { OpenAIGpt6LunaResponseSuggestionGenerator } from '../intelligence/openai-gpt-6-luna-response-suggestion-generator';
 import { createPostgresPool, PostgresPersistenceAdapter } from './postgres-persistence.adapter';
@@ -86,11 +104,14 @@ import { createPostgresPool, PostgresPersistenceAdapter } from './postgres-persi
 const POSTGRES_POOL = Symbol('POSTGRES_POOL');
 export const RELATIONAL_DATABASE = Symbol('RELATIONAL_DATABASE');
 export const SOCIAL_ACCOUNT_REPOSITORY = Symbol('SOCIAL_ACCOUNT_REPOSITORY');
+export const SOCIAL_ACCOUNT_DISCONNECTOR = Symbol('SOCIAL_ACCOUNT_DISCONNECTOR');
+export const SOCIAL_PUBLICATION_REPOSITORY = Symbol('SOCIAL_PUBLICATION_REPOSITORY');
 export const SOCIAL_CREDENTIAL_VAULT = Symbol('SOCIAL_CREDENTIAL_VAULT');
 export const SOCIAL_PUBLICATION_READERS = Symbol('SOCIAL_PUBLICATION_READERS');
 export const YOUTUBE_ACCOUNT_CREDENTIAL_PROVIDER = Symbol('YOUTUBE_ACCOUNT_CREDENTIAL_PROVIDER');
 export const SOCIAL_COMMENT_READER = Symbol('SOCIAL_COMMENT_READER');
 export const SOCIAL_COMMENT_RESPONDER = Symbol('SOCIAL_COMMENT_RESPONDER');
+export const SOCIAL_COMMENT_LIKER = Symbol('SOCIAL_COMMENT_LIKER');
 export const SOCIAL_COMMENT_REPOSITORY = Symbol('SOCIAL_COMMENT_REPOSITORY');
 export const SOCIAL_COMMENT_READERS = Symbol('SOCIAL_COMMENT_READERS');
 export const COMMENT_WORKFLOW_EVENT_REPOSITORY = Symbol('COMMENT_WORKFLOW_EVENT_REPOSITORY');
@@ -98,7 +119,11 @@ export const COMMENT_EVALUATOR = Symbol('COMMENT_EVALUATOR');
 export const RESPONSE_EVALUATOR = Symbol('RESPONSE_EVALUATOR');
 export const RESPONSE_SUGGESTION_GENERATOR = Symbol('RESPONSE_SUGGESTION_GENERATOR');
 export const RESPONSE_GENERATION_SETTINGS_REPOSITORY = Symbol('RESPONSE_GENERATION_SETTINGS_REPOSITORY');
+export const AI_PROVIDER_SETTINGS_REPOSITORY = Symbol('AI_PROVIDER_SETTINGS_REPOSITORY');
 export const RESPONSE_TONE_SETTINGS_REPOSITORY = Symbol('RESPONSE_TONE_SETTINGS_REPOSITORY');
+export const TENANT_RESPONSE_TONE_SETTINGS_REPOSITORY = Symbol('TENANT_RESPONSE_TONE_SETTINGS_REPOSITORY');
+export const VERIFIED_RELEASE_SCHEDULE_REPOSITORY = Symbol('VERIFIED_RELEASE_SCHEDULE_REPOSITORY');
+export const TENANT_VERIFIED_RELEASE_SCHEDULE_REPOSITORY = Symbol('TENANT_VERIFIED_RELEASE_SCHEDULE_REPOSITORY');
 const YOUTUBE_COMMUNITY_ADAPTER = Symbol('YOUTUBE_COMMUNITY_ADAPTER');
 
 @Injectable()
@@ -155,6 +180,16 @@ export class PostgresPersistenceModule {
           inject: [RELATIONAL_DATABASE],
         },
         {
+          provide: SOCIAL_ACCOUNT_DISCONNECTOR,
+          useFactory: (database: RelationalDatabase): SocialAccountDisconnector => new PostgresSocialAccountDisconnector(database),
+          inject: [RELATIONAL_DATABASE],
+        },
+        {
+          provide: SOCIAL_PUBLICATION_REPOSITORY,
+          useFactory: (database: RelationalDatabase): SocialPublicationRepository => new PostgresSocialPublicationRepository(database),
+          inject: [RELATIONAL_DATABASE],
+        },
+        {
           provide: SOCIAL_COMMENT_REPOSITORY,
           useFactory: (database: RelationalDatabase): SocialCommentRepository => new PostgresSocialCommentRepository(database),
           inject: [RELATIONAL_DATABASE],
@@ -170,12 +205,45 @@ export class PostgresPersistenceModule {
           inject: [RELATIONAL_DATABASE],
         },
         {
+          provide: AI_PROVIDER_SETTINGS_REPOSITORY,
+          useFactory: (database: RelationalDatabase): AIProviderSettingsRepository => new PostgresAIProviderSettingsRepository(database),
+          inject: [RELATIONAL_DATABASE],
+        },
+        {
+          provide: TypeSafeSystemOneClient,
+          useFactory: (settings: AIProviderSettingsRepository) => new TypeSafeSystemOneClient(process.env, fetch, settings),
+          inject: [AI_PROVIDER_SETTINGS_REPOSITORY],
+        },
+        {
           provide: RESPONSE_TONE_SETTINGS_REPOSITORY,
           useFactory: (database: RelationalDatabase): ResponseToneSettingsRepository => new PostgresSocialAccountResponseToneSettingsRepository(database),
           inject: [RELATIONAL_DATABASE],
         },
-        { provide: GeminiFlashLiteResponseSuggestionGenerator, useFactory: () => new GeminiFlashLiteResponseSuggestionGenerator() },
-        { provide: OpenAIGpt6LunaResponseSuggestionGenerator, useFactory: () => new OpenAIGpt6LunaResponseSuggestionGenerator() },
+        {
+          provide: TENANT_RESPONSE_TONE_SETTINGS_REPOSITORY,
+          useFactory: (database: RelationalDatabase): TenantResponseToneSettingsRepository => new PostgresTenantResponseToneSettingsRepository(database),
+          inject: [RELATIONAL_DATABASE],
+        },
+        {
+          provide: VERIFIED_RELEASE_SCHEDULE_REPOSITORY,
+          useFactory: (database: RelationalDatabase): VerifiedReleaseScheduleRepository => new PostgresVerifiedReleaseScheduleRepository(database),
+          inject: [RELATIONAL_DATABASE],
+        },
+        {
+          provide: TENANT_VERIFIED_RELEASE_SCHEDULE_REPOSITORY,
+          useFactory: (database: RelationalDatabase): TenantVerifiedReleaseScheduleRepository => new PostgresTenantVerifiedReleaseScheduleRepository(database),
+          inject: [RELATIONAL_DATABASE],
+        },
+        {
+          provide: GeminiFlashLiteResponseSuggestionGenerator,
+          useFactory: (settings: AIProviderSettingsRepository) => new GeminiFlashLiteResponseSuggestionGenerator(process.env, fetch, settings),
+          inject: [AI_PROVIDER_SETTINGS_REPOSITORY],
+        },
+        {
+          provide: OpenAIGpt6LunaResponseSuggestionGenerator,
+          useFactory: (settings: AIProviderSettingsRepository) => new OpenAIGpt6LunaResponseSuggestionGenerator(process.env, fetch, settings),
+          inject: [AI_PROVIDER_SETTINGS_REPOSITORY],
+        },
         {
           provide: RESPONSE_SUGGESTION_GENERATOR,
           useFactory: (settings: ResponseGenerationSettingsRepository, google: ResponseSuggestionGenerator, openai: ResponseSuggestionGenerator) => new ConfiguredResponseSuggestionGenerator(settings, { google, openai }),
@@ -192,17 +260,65 @@ export class PostgresPersistenceModule {
           inject: [RESPONSE_GENERATION_SETTINGS_REPOSITORY],
         },
         {
+          provide: GetAIProviderAccessStatus,
+          useFactory: (settings: AIProviderSettingsRepository) => new GetAIProviderAccessStatus(settings),
+          inject: [AI_PROVIDER_SETTINGS_REPOSITORY],
+        },
+        {
+          provide: UpdateAIProviderAccessSettings,
+          useFactory: (settings: AIProviderSettingsRepository) => new UpdateAIProviderAccessSettings(settings),
+          inject: [AI_PROVIDER_SETTINGS_REPOSITORY],
+        },
+        {
           provide: GetAccountResponseToneSettings,
-          useFactory: (accounts: SocialAccountRepository, settings: ResponseToneSettingsRepository, tenant: LocalPilotTenantContext) => new GetAccountResponseToneSettings(accounts, settings, tenant),
-          inject: [SOCIAL_ACCOUNT_REPOSITORY, RESPONSE_TONE_SETTINGS_REPOSITORY, LocalPilotTenantContext],
+          useFactory: (accounts: SocialAccountRepository, settings: ResponseToneSettingsRepository, tenantSettings: TenantResponseToneSettingsRepository, tenant: LocalPilotTenantContext) => new GetAccountResponseToneSettings(accounts, settings, tenantSettings, tenant),
+          inject: [SOCIAL_ACCOUNT_REPOSITORY, RESPONSE_TONE_SETTINGS_REPOSITORY, TENANT_RESPONSE_TONE_SETTINGS_REPOSITORY, LocalPilotTenantContext],
         },
         {
           provide: UpdateAccountResponseToneSettings,
           useFactory: (accounts: SocialAccountRepository, settings: ResponseToneSettingsRepository, tenant: LocalPilotTenantContext) => new UpdateAccountResponseToneSettings(accounts, settings, tenant),
           inject: [SOCIAL_ACCOUNT_REPOSITORY, RESPONSE_TONE_SETTINGS_REPOSITORY, LocalPilotTenantContext],
         },
-        { provide: COMMENT_EVALUATOR, useFactory: (): CommentEvaluator => new JevCommentEvaluator() },
-        { provide: RESPONSE_EVALUATOR, useFactory: (): ResponseEvaluator => new JevResponseEvaluator() },
+        {
+          provide: GetTenantResponseToneSettings,
+          useFactory: (tenantSettings: TenantResponseToneSettingsRepository, tenant: LocalPilotTenantContext) => new GetTenantResponseToneSettings(tenantSettings, tenant),
+          inject: [TENANT_RESPONSE_TONE_SETTINGS_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: UpdateTenantResponseToneSettings,
+          useFactory: (tenantSettings: TenantResponseToneSettingsRepository, tenant: LocalPilotTenantContext) => new UpdateTenantResponseToneSettings(tenantSettings, tenant),
+          inject: [TENANT_RESPONSE_TONE_SETTINGS_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: GetVerifiedReleaseSchedule,
+          useFactory: (accounts: SocialAccountRepository, schedules: VerifiedReleaseScheduleRepository, tenantSchedules: TenantVerifiedReleaseScheduleRepository, tenant: LocalPilotTenantContext) => new GetVerifiedReleaseSchedule(accounts, schedules, tenantSchedules, tenant),
+          inject: [SOCIAL_ACCOUNT_REPOSITORY, VERIFIED_RELEASE_SCHEDULE_REPOSITORY, TENANT_VERIFIED_RELEASE_SCHEDULE_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: UpdateVerifiedReleaseSchedule,
+          useFactory: (accounts: SocialAccountRepository, schedules: VerifiedReleaseScheduleRepository, tenant: LocalPilotTenantContext) => new UpdateVerifiedReleaseSchedule(accounts, schedules, tenant),
+          inject: [SOCIAL_ACCOUNT_REPOSITORY, VERIFIED_RELEASE_SCHEDULE_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: GetTenantVerifiedReleaseSchedule,
+          useFactory: (tenantSchedules: TenantVerifiedReleaseScheduleRepository, tenant: LocalPilotTenantContext) => new GetTenantVerifiedReleaseSchedule(tenantSchedules, tenant),
+          inject: [TENANT_VERIFIED_RELEASE_SCHEDULE_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: UpdateTenantVerifiedReleaseSchedule,
+          useFactory: (tenantSchedules: TenantVerifiedReleaseScheduleRepository, tenant: LocalPilotTenantContext) => new UpdateTenantVerifiedReleaseSchedule(tenantSchedules, tenant),
+          inject: [TENANT_VERIFIED_RELEASE_SCHEDULE_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: COMMENT_EVALUATOR,
+          useFactory: (client: TypeSafeSystemOneClient): CommentEvaluator => new JevCommentEvaluator(client),
+          inject: [TypeSafeSystemOneClient],
+        },
+        {
+          provide: RESPONSE_EVALUATOR,
+          useFactory: (client: TypeSafeSystemOneClient): ResponseEvaluator => new JevResponseEvaluator(client),
+          inject: [TypeSafeSystemOneClient],
+        },
         {
           provide: SOCIAL_CREDENTIAL_VAULT,
           useFactory: (database: RelationalDatabase): SocialCredentialVault => new PostgresSocialCredentialVault(database),
@@ -300,6 +416,11 @@ export class PostgresPersistenceModule {
           inject: [YOUTUBE_COMMUNITY_ADAPTER, InstagramCommunityAdapter, FacebookPagesCommunityAdapter, TikTokBusinessCommunityAdapter],
         },
         {
+          provide: SOCIAL_COMMENT_LIKER,
+          useFactory: (facebook: FacebookPagesCommunityAdapter, tiktok: TikTokBusinessCommunityAdapter): SocialCommentLiker => new PlatformSocialCommentLiker({ facebook, tiktok }),
+          inject: [FacebookPagesCommunityAdapter, TikTokBusinessCommunityAdapter],
+        },
+        {
           provide: SOCIAL_COMMENT_READERS,
           useFactory: (youtube: YouTubeCommunityAdapter, instagram: InstagramCommunityAdapter, facebook: FacebookPagesCommunityAdapter, tiktok: TikTokBusinessCommunityAdapter): SocialCommentReaderRegistry => ({ youtube, instagram, facebook, tiktok }),
           inject: [YOUTUBE_COMMUNITY_ADAPTER, InstagramCommunityAdapter, FacebookPagesCommunityAdapter, TikTokBusinessCommunityAdapter],
@@ -310,9 +431,19 @@ export class PostgresPersistenceModule {
           inject: [SOCIAL_ACCOUNT_REPOSITORY, LocalPilotTenantContext, UuidSocialAccountIdGenerator],
         },
         {
+          provide: ListConnectedSocialAccounts,
+          useFactory: (accounts: SocialAccountRepository, tenant: LocalPilotTenantContext) => new ListConnectedSocialAccounts(accounts, tenant),
+          inject: [SOCIAL_ACCOUNT_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: DisconnectSocialAccount,
+          useFactory: (disconnector: SocialAccountDisconnector, tenant: LocalPilotTenantContext) => new DisconnectSocialAccount(disconnector, tenant),
+          inject: [SOCIAL_ACCOUNT_DISCONNECTOR, LocalPilotTenantContext],
+        },
+        {
           provide: ListSocialPublications,
-          useFactory: (accounts: SocialAccountRepository, tenant: LocalPilotTenantContext, readers: SocialPublicationReaderRegistry) => new ListSocialPublications(accounts, tenant, readers),
-          inject: [SOCIAL_ACCOUNT_REPOSITORY, LocalPilotTenantContext, SOCIAL_PUBLICATION_READERS],
+          useFactory: (accounts: SocialAccountRepository, tenant: LocalPilotTenantContext, readers: SocialPublicationReaderRegistry, publications: SocialPublicationRepository) => new ListSocialPublications(accounts, tenant, readers, publications),
+          inject: [SOCIAL_ACCOUNT_REPOSITORY, LocalPilotTenantContext, SOCIAL_PUBLICATION_READERS, SOCIAL_PUBLICATION_REPOSITORY],
         },
         {
           provide: SyncPublicationComments,
@@ -323,6 +454,11 @@ export class PostgresPersistenceModule {
           provide: ListPublicationComments,
           useFactory: (accounts: SocialAccountRepository, comments: SocialCommentRepository, tenant: LocalPilotTenantContext) => new ListPublicationComments(accounts, comments, tenant),
           inject: [SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_COMMENT_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: GetCommentSummary,
+          useFactory: (comments: SocialCommentRepository, tenant: LocalPilotTenantContext) => new GetCommentSummary(comments, tenant),
+          inject: [SOCIAL_COMMENT_REPOSITORY, LocalPilotTenantContext],
         },
         {
           provide: RecordCommentAnalysis,
@@ -365,6 +501,11 @@ export class PostgresPersistenceModule {
           inject: [SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_COMMENT_REPOSITORY, SOCIAL_COMMENT_RESPONDER, COMMENT_WORKFLOW_EVENT_REPOSITORY, LocalPilotTenantContext, UuidManualReplyAttemptIdGenerator],
         },
         {
+          provide: SetCommentLike,
+          useFactory: (accounts: SocialAccountRepository, comments: SocialCommentRepository, liker: SocialCommentLiker, events: CommentWorkflowEventRepository, tenant: LocalPilotTenantContext) => new SetCommentLike(accounts, comments, liker, events, tenant),
+          inject: [SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_COMMENT_REPOSITORY, SOCIAL_COMMENT_LIKER, COMMENT_WORKFLOW_EVENT_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
           provide: ListCommentWorkflow,
           useFactory: (events: CommentWorkflowEventRepository, accounts: SocialAccountRepository, tenant: LocalPilotTenantContext) => new ListCommentWorkflow(events, accounts, tenant),
           inject: [COMMENT_WORKFLOW_EVENT_REPOSITORY, SOCIAL_ACCOUNT_REPOSITORY, LocalPilotTenantContext],
@@ -376,13 +517,13 @@ export class PostgresPersistenceModule {
         },
         {
           provide: EvaluateResponseSuggestion,
-          useFactory: (accounts: SocialAccountRepository, comments: SocialCommentRepository, evaluator: ResponseEvaluator, record: RecordResponseEvaluation, events: CommentWorkflowEventRepository, tenant: LocalPilotTenantContext) => new EvaluateResponseSuggestion(accounts, comments, evaluator, record, events, tenant),
-          inject: [SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_COMMENT_REPOSITORY, RESPONSE_EVALUATOR, RecordResponseEvaluation, COMMENT_WORKFLOW_EVENT_REPOSITORY, LocalPilotTenantContext],
+          useFactory: (accounts: SocialAccountRepository, comments: SocialCommentRepository, evaluator: ResponseEvaluator, record: RecordResponseEvaluation, events: CommentWorkflowEventRepository, tenant: LocalPilotTenantContext, schedules: VerifiedReleaseScheduleRepository, tenantSchedules: TenantVerifiedReleaseScheduleRepository) => new EvaluateResponseSuggestion(accounts, comments, evaluator, record, events, tenant, schedules, tenantSchedules),
+          inject: [SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_COMMENT_REPOSITORY, RESPONSE_EVALUATOR, RecordResponseEvaluation, COMMENT_WORKFLOW_EVENT_REPOSITORY, LocalPilotTenantContext, VERIFIED_RELEASE_SCHEDULE_REPOSITORY, TENANT_VERIFIED_RELEASE_SCHEDULE_REPOSITORY],
         },
         {
           provide: GenerateCommentResponseSuggestion,
-          useFactory: (accounts: SocialAccountRepository, comments: SocialCommentRepository, generator: ResponseSuggestionGenerator, record: RecordResponseSuggestion, events: CommentWorkflowEventRepository, tenant: LocalPilotTenantContext, toneSettings: ResponseToneSettingsRepository) => new GenerateCommentResponseSuggestion(accounts, comments, generator, record, events, tenant, toneSettings),
-          inject: [SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_COMMENT_REPOSITORY, RESPONSE_SUGGESTION_GENERATOR, RecordResponseSuggestion, COMMENT_WORKFLOW_EVENT_REPOSITORY, LocalPilotTenantContext, RESPONSE_TONE_SETTINGS_REPOSITORY],
+          useFactory: (accounts: SocialAccountRepository, comments: SocialCommentRepository, generator: ResponseSuggestionGenerator, record: RecordResponseSuggestion, events: CommentWorkflowEventRepository, tenant: LocalPilotTenantContext, toneSettings: ResponseToneSettingsRepository, tenantToneSettings: TenantResponseToneSettingsRepository, schedules: VerifiedReleaseScheduleRepository, tenantSchedules: TenantVerifiedReleaseScheduleRepository) => new GenerateCommentResponseSuggestion(accounts, comments, generator, record, events, tenant, toneSettings, tenantToneSettings, schedules, tenantSchedules),
+          inject: [SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_COMMENT_REPOSITORY, RESPONSE_SUGGESTION_GENERATOR, RecordResponseSuggestion, COMMENT_WORKFLOW_EVENT_REPOSITORY, LocalPilotTenantContext, RESPONSE_TONE_SETTINGS_REPOSITORY, TENANT_RESPONSE_TONE_SETTINGS_REPOSITORY, VERIFIED_RELEASE_SCHEDULE_REPOSITORY, TENANT_VERIFIED_RELEASE_SCHEDULE_REPOSITORY],
         },
         {
           provide: RunCommentWorkflowBatch,
@@ -447,7 +588,7 @@ export class PostgresPersistenceModule {
           inject: [InMemoryTikTokBusinessOAuthFlowStateStore, TikTokBusinessOAuthClient, LocalPilotTenantContext, SOCIAL_ACCOUNT_REPOSITORY, ConnectSocialAccount, SOCIAL_CREDENTIAL_VAULT],
         },
       ],
-      exports: [RELATIONAL_DATABASE, SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_COMMENT_READER, SOCIAL_COMMENT_RESPONDER, SOCIAL_COMMENT_REPOSITORY, COMMENT_WORKFLOW_EVENT_REPOSITORY, GetResponseGenerationSettings, UpdateResponseGenerationSettings, GetAccountResponseToneSettings, UpdateAccountResponseToneSettings, SyncPublicationComments, ListPublicationComments, RecordCommentAnalysis, CorrectCommentAnalysis, RecordResponseSuggestion, ReviseResponseSuggestion, RecordResponseEvaluation, RecordManualResponse, ReviseManualResponse, SendManualCommentReply, ListCommentWorkflow, EvaluateComment, EvaluateResponseSuggestion, GenerateCommentResponseSuggestion, RunCommentWorkflowBatch, ListCommentWorkflowBatchEvents, ConnectSocialAccount, ListSocialPublications, BeginYouTubeOAuth, CompleteYouTubeOAuth, BeginInstagramOAuth, CompleteInstagramOAuth, BeginFacebookOAuth, CompleteFacebookOAuth, SelectFacebookPage, BeginTikTokBusinessOAuth, CompleteTikTokBusinessOAuth],
+      exports: [RELATIONAL_DATABASE, SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_PUBLICATION_REPOSITORY, SOCIAL_COMMENT_READER, SOCIAL_COMMENT_RESPONDER, SOCIAL_COMMENT_LIKER, SOCIAL_COMMENT_REPOSITORY, COMMENT_WORKFLOW_EVENT_REPOSITORY, VERIFIED_RELEASE_SCHEDULE_REPOSITORY, GetResponseGenerationSettings, UpdateResponseGenerationSettings, GetAIProviderAccessStatus, UpdateAIProviderAccessSettings, GetAccountResponseToneSettings, UpdateAccountResponseToneSettings, GetTenantResponseToneSettings, UpdateTenantResponseToneSettings, GetVerifiedReleaseSchedule, UpdateVerifiedReleaseSchedule, GetTenantVerifiedReleaseSchedule, UpdateTenantVerifiedReleaseSchedule, SyncPublicationComments, ListPublicationComments, GetCommentSummary, SetCommentLike, RecordCommentAnalysis, CorrectCommentAnalysis, RecordResponseSuggestion, ReviseResponseSuggestion, RecordResponseEvaluation, RecordManualResponse, ReviseManualResponse, SendManualCommentReply, ListCommentWorkflow, EvaluateComment, EvaluateResponseSuggestion, GenerateCommentResponseSuggestion, RunCommentWorkflowBatch, ListCommentWorkflowBatchEvents, ConnectSocialAccount, ListConnectedSocialAccounts, DisconnectSocialAccount, ListSocialPublications, BeginYouTubeOAuth, CompleteYouTubeOAuth, BeginInstagramOAuth, CompleteInstagramOAuth, BeginFacebookOAuth, CompleteFacebookOAuth, SelectFacebookPage, BeginTikTokBusinessOAuth, CompleteTikTokBusinessOAuth],
     };
   }
 }

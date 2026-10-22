@@ -1,7 +1,7 @@
 import type { SocialAccountRepository } from '../ports/social-account-repository.port';
 import type { SocialCommentRepository, StoredPlatformComment } from '../ports/social-comment-repository.port';
 import type { CommentWorkflowEventRepository } from '../ports/comment-workflow-event-repository.port';
-import type { ExternalReplyStatus, PlatformComment, SocialCommentReader } from '../ports/social-comment.port';
+import type { ExternalReplyStatus, PlatformComment, PlatformCreatorReply, SocialCommentReader } from '../ports/social-comment.port';
 import type { PilotTenantContext } from '../ports/pilot-tenant-context.port';
 import type { SocialAccount, SocialPlatform } from '../../domain/social/social-account';
 import { parseSocialAccountId } from '../../domain/social/social-account-id';
@@ -55,18 +55,29 @@ export class SyncPublicationComments {
     }
     await this.comments.deleteExpired(tenantId, new Date(this.now()).toISOString());
     const page = await reader.getComments(account, input.publicationId, input.cursor);
-    if (!Array.isArray(page.items) || (page.nextCursor !== null && typeof page.nextCursor !== 'string')) {
+    if (typeof page !== 'object' || page === null || !Array.isArray(page.items)
+      || !Array.isArray(page.creatorReplies)
+      || (page.nextCursor !== null && typeof page.nextCursor !== 'string')) {
       throw new SocialProviderError('SOCIAL_PROVIDER_RESPONSE_INVALID');
     }
     if (page.items.some((comment) => !this.isValidComment(account, input.publicationId, comment))) {
+      throw new SocialProviderError('SOCIAL_PROVIDER_RESPONSE_INVALID');
+    }
+    if (!this.areValidCreatorReplies(account, input.publicationId, page.creatorReplies)) {
       throw new SocialProviderError('SOCIAL_PROVIDER_RESPONSE_INVALID');
     }
 
     const synchronizedAtMilliseconds = this.now();
     const synchronizedAt = new Date(synchronizedAtMilliseconds).toISOString();
     const expiresAt = new Date(synchronizedAtMilliseconds + commentRetentionMilliseconds).toISOString();
-    const normalizedItems = page.items.map((comment) => ({ ...comment, externalReplyStatus: comment.externalReplyStatus ?? 'UNKNOWN' as ExternalReplyStatus }));
-    await this.comments.upsertPage(account, input.publicationId, normalizedItems, synchronizedAt, expiresAt);
+    const replyCommentIds = new Set(page.creatorReplies.map((reply) => reply.externalCommentId));
+    const normalizedItems = page.items.map((comment) => ({
+      ...comment,
+      externalReplyStatus: replyCommentIds.has(comment.externalCommentId)
+        ? 'REPLIED' as ExternalReplyStatus
+        : comment.externalReplyStatus ?? 'UNKNOWN' as ExternalReplyStatus,
+    }));
+    await this.comments.upsertPage(account, input.publicationId, normalizedItems, synchronizedAt, expiresAt, page.creatorReplies);
     const normalizedIds = new Set(normalizedItems.map((comment) => comment.externalCommentId));
     const persistedItems = (await this.comments.listByPublication(tenantId, account.id, input.publicationId, synchronizedAt))
       .filter((comment) => normalizedIds.has(comment.externalCommentId));
@@ -99,7 +110,8 @@ export class SyncPublicationComments {
   }
 
   private isValidComment(account: SocialAccount, publicationId: string, comment: PlatformComment): boolean {
-    return comment.platform === account.platform
+    return typeof comment === 'object' && comment !== null
+      && comment.platform === account.platform
       && comment.externalPublicationId === publicationId
       && typeof comment.externalCommentId === 'string'
       && Boolean(comment.externalCommentId.trim())
@@ -109,7 +121,32 @@ export class SyncPublicationComments {
       && (comment.text === null || typeof comment.text === 'string')
       && (comment.externalReplyStatus === undefined || ['REPLIED', 'NOT_REPLIED', 'UNKNOWN'].includes(comment.externalReplyStatus))
       && typeof comment.canReply === 'boolean'
+      && typeof comment.canLike === 'boolean'
       && (comment.createdAt === null || (typeof comment.createdAt === 'string' && Number.isFinite(Date.parse(comment.createdAt))));
+  }
+
+  private areValidCreatorReplies(
+    account: SocialAccount,
+    publicationId: string,
+    creatorReplies: readonly PlatformCreatorReply[],
+  ): boolean {
+    const replyIds = new Set<string>();
+    for (const reply of creatorReplies) {
+      if (typeof reply !== 'object' || reply === null
+        || reply.platform !== account.platform
+        || reply.externalPublicationId !== publicationId
+        || typeof reply.externalCommentId !== 'string'
+        || !reply.externalCommentId.trim()
+        || typeof reply.externalReplyId !== 'string'
+        || !reply.externalReplyId.trim()
+        || replyIds.has(reply.externalReplyId)
+        || (reply.text !== null && typeof reply.text !== 'string')
+        || (reply.createdAt !== null && (typeof reply.createdAt !== 'string' || !Number.isFinite(Date.parse(reply.createdAt))))) {
+        return false;
+      }
+      replyIds.add(reply.externalReplyId);
+    }
+    return true;
   }
 }
 

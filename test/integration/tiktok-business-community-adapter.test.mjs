@@ -54,6 +54,7 @@ const comment = {
   text: 'Great video',
   createdAt: null,
   canReply: true,
+  canLike: true,
 };
 
 test('platform responder registry dispatches TikTok replies only to the TikTok adapter', async () => {
@@ -75,7 +76,10 @@ test('TikTok Business adapter normalizes comments, reply state, and pagination w
     code: 0,
     data: {
       comments: [
-        { comment_id: 'comment-1', video_id: 'video-1', text: 'Great video', create_time: String(createdAt), username: 'viewer', display_name: 'Viewer', reply_count: 2, status: 'PUBLIC', owner: false, reply_list: [{ comment_id: 'reply-1', owner: false }, { comment_id: 'reply-2', owner: true }] },
+        { comment_id: 'comment-1', video_id: 'video-1', text: 'Great video', create_time: String(createdAt), username: 'viewer', display_name: 'Viewer', reply_count: 2, status: 'PUBLIC', owner: false, reply_list: [
+          { comment_id: 'reply-1', parent_comment_id: 'comment-1', video_id: 'video-1', text: 'Viewer follow-up', create_time: String(createdAt + 100), owner: false },
+          { comment_id: 'reply-2', parent_comment_id: 'comment-1', video_id: 'video-1', text: 'Thanks for watching!', create_time: String(createdAt + 200), owner: true },
+        ] },
         { comment_id: 'comment-2', video_id: 'video-1', text: 'Question', create_time: String(createdAt), reply_count: 0, status: 'PUBLIC', owner: false },
         { comment_id: 'comment-3', video_id: 'video-1', text: 'Another', create_time: String(createdAt), reply_count: 4, status: 'PUBLIC', owner: false, reply_list: [{ comment_id: 'reply-3', owner: false }] },
       ],
@@ -89,8 +93,17 @@ test('TikTok Business adapter normalizes comments, reply state, and pagination w
   assert.deepEqual(page.items.map((item) => [item.externalCommentId, item.externalReplyStatus]), [
     ['comment-1', 'REPLIED'], ['comment-2', 'NOT_REPLIED'], ['comment-3', 'UNKNOWN'],
   ]);
+  assert.deepEqual(page.creatorReplies, [{
+    platform: 'tiktok',
+    externalReplyId: 'reply-2',
+    externalCommentId: 'comment-1',
+    externalPublicationId: 'video-1',
+    text: 'Thanks for watching!',
+    createdAt: new Date((createdAt + 200) * 1000).toISOString(),
+  }]);
   assert.equal(page.items[0].createdAt, new Date(createdAt * 1000).toISOString());
   assert.equal(page.items[0].externalThreadId, 'comment-1');
+  assert.equal(page.items[0].canLike, true);
   assert.equal(page.nextCursor, '200');
   assert.equal(requests[0].url.pathname, '/open_api/v1.3/business/comment/list/');
   assert.equal(requests[0].url.searchParams.get('business_id'), account.externalAccountId);
@@ -99,6 +112,36 @@ test('TikTok Business adapter normalizes comments, reply state, and pagination w
   assert.equal(requests[0].url.searchParams.get('include_replies'), 'true');
   assert.equal(requests[0].options.headers['Access-Token'], 'tiktok-test-token');
   assert.deepEqual(credentialCalls[0], ['hasScopes', account.credentialReference, 'tiktok', ['comment.list']]);
+});
+
+test('TikTok Business adapter returns a direct creator reply even when its parent arrived on an earlier page', async () => {
+  const createdAt = 1760356800;
+  const { adapter } = createAdapter([jsonResponse({
+    code: 0,
+    data: {
+      comments: [{
+        comment_id: 'reply-previous-parent',
+        parent_comment_id: 'comment-from-previous-page',
+        video_id: 'video-1',
+        text: 'Creator follow-up',
+        create_time: String(createdAt),
+        owner: true,
+      }],
+      has_more: false,
+    },
+  })]);
+
+  const page = await adapter.getComments(account, 'video-1');
+
+  assert.deepEqual(page.items, []);
+  assert.deepEqual(page.creatorReplies, [{
+    platform: 'tiktok',
+    externalReplyId: 'reply-previous-parent',
+    externalCommentId: 'comment-from-previous-page',
+    externalPublicationId: 'video-1',
+    text: 'Creator follow-up',
+    createdAt: new Date(createdAt * 1000).toISOString(),
+  }]);
 });
 
 test('TikTok Business adapter creates one reply on the exact owned-video comment', async () => {
@@ -116,6 +159,37 @@ test('TikTok Business adapter creates one reply on the exact owned-video comment
     comment_id: comment.externalCommentId,
     text: 'Manual final response',
   });
+});
+
+test('TikTok Business adapter likes and unlikes the selected owned-video comment', async () => {
+  const { adapter, requests, credentialCalls } = createAdapter([
+    jsonResponse({ code: 0, data: {} }),
+    jsonResponse({ code: 0, data: {} }),
+  ]);
+
+  await adapter.setLike(account, comment, 'LIKE');
+  await adapter.setLike(account, comment, 'UNLIKE');
+
+  assert.equal(requests[0].url.pathname, '/open_api/v1.3/business/comment/like/');
+  assert.equal(requests[1].url.pathname, '/open_api/v1.3/business/comment/like/');
+  assert.deepEqual(requests.map(({ options }) => JSON.parse(options.body)), [
+    { business_id: account.externalAccountId, comment_id: comment.externalCommentId, action: 'LIKE' },
+    { business_id: account.externalAccountId, comment_id: comment.externalCommentId, action: 'UNLIKE' },
+  ]);
+  assert.deepEqual(credentialCalls.filter(([kind]) => kind === 'hasScopes').map(([, , , scopes]) => scopes), [
+    ['comment.list.manage'],
+    ['comment.list.manage'],
+  ]);
+});
+
+test('TikTok Business adapter denies comment likes without comment-management scope', async () => {
+  const { adapter, requests } = createAdapter([], ['comment.list']);
+
+  await assert.rejects(
+    adapter.setLike(account, comment, 'LIKE'),
+    (error) => error instanceof SocialProviderError && error.code === 'SOCIAL_ACCOUNT_PERMISSION_DENIED',
+  );
+  assert.deepEqual(requests, []);
 });
 
 test('TikTok Business adapter checks reply capability/scopes and preserves ambiguous write outcomes', async () => {

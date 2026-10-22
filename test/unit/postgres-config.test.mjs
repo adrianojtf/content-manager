@@ -4,10 +4,12 @@ import test from 'node:test';
 
 const require = createRequire(import.meta.url);
 const { postgresPoolConfigFromEnvironment } = require('../../dist/infrastructure/persistence/postgres-persistence.config.js');
-const { PostgresPersistenceModule, SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_CREDENTIAL_VAULT } = require('../../dist/infrastructure/persistence/postgres-persistence.module.js');
+const { PostgresPersistenceModule, AI_PROVIDER_SETTINGS_REPOSITORY, SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_CREDENTIAL_VAULT } = require('../../dist/infrastructure/persistence/postgres-persistence.module.js');
 const { AppModule } = require('../../dist/presentation/http/app.module.js');
 const { ConnectSocialAccount } = require('../../dist/application/social/connect-social-account.js');
 const { ListSocialPublications } = require('../../dist/application/social/list-social-publications.js');
+const { GetAIProviderAccessStatus } = require('../../dist/application/social/ai-provider-access-settings.js');
+const { UpdateAIProviderAccessSettings } = require('../../dist/application/social/ai-provider-access-settings.js');
 
 test('PostgreSQL configuration reads and trims DATABASE_URL', () => {
   assert.deepEqual(postgresPoolConfigFromEnvironment({ DATABASE_URL: ' postgresql://localhost:5432/content_manager ' }), {
@@ -37,4 +39,8 @@ test('Postgres persistence module exposes the tenant-scoped social account repos
   assert.ok(module.providers.some((provider) => typeof provider === 'object' && provider.provide === SOCIAL_CREDENTIAL_VAULT));
   assert.ok(module.providers.some((provider) => typeof provider === 'object' && provider.provide === ListSocialPublications));
   assert.ok(module.exports.includes(ListSocialPublications));
+  assert.ok(module.providers.some((provider) => typeof provider === 'object' && provider.provide === GetAIProviderAccessStatus));
+  assert.ok(module.exports.includes(GetAIProviderAccessStatus));
+  assert.ok(module.providers.some((provider) => typeof provider === 'object' && provider.provide === AI_PROVIDER_SETTINGS_REPOSITORY));
+  assert.ok(module.exports.includes(UpdateAIProviderAccessSettings));
 });

@@ -1,7 +1,7 @@
 # PRD — Social Accounts and Publishing
 
 **Status:** Draft — local YouTube, Instagram Login, Facebook Page, and configurable TikTok Business OAuth connection flows are implemented. Live provider access/App Review and TikTok refresh verification remain pending. TikTok documents a short-term account-token revoke endpoint, but this application does not expose or call it. Phase 4 metadata, media limits, and retry policy remain open.  
-**Tech spec:** [Technical Specification — Social Accounts and Publishing](../../specifications/technical-social-publishing.md)
+**Tech spec:** [Technical Specification — Social Accounts and Publishing](../../specifications/technical-social-publishing.md) · **Synchronization PRD:** [Social Content Synchronization](social-content-synchronization.md)
 
 ## 1. Objective
 
@@ -17,6 +17,8 @@ The creator wants to view existing publications and their comments from connecte
 
 Active MVP comment/read/reply targets include YouTube, Instagram professional Business/Creator accounts, managed Facebook Pages, and TikTok Business accounts for owned organic videos. Local HTTP connection is implemented for YouTube, Instagram, Facebook Pages, and configurable TikTok Business account OAuth. TikTok requires the app-generated authorization URL/runtime credentials; local tests do not prove live app access or verify the refresh payload against an approved app. Provider live access approvals remain separate from local implementation; video publishing remains Phase 4.
 
+The CreatorDesk profile settings screen lists connected accounts, starts the existing provider OAuth flow, and lets the creator disconnect an account. Disconnect requires explicit confirmation because it deletes that account's locally synchronized publication metadata, comments, creator replies, workflow history, and tone settings along with its stored credentials. It does not revoke the grant at the external provider; the creator can revoke that separately in the provider's account settings. The screen never accepts provider credentials. Facebook Page connection requires an explicit Page selection after OAuth; the connected-account list itself performs no provider reads.
+
 Phase 1 provider baseline (subject to each platform's authorization and access tier):
 
 - **YouTube:** the authenticated channel's uploads and video comments; replies only where the provider reports the thread is replyable. Reply authorization requires Google's `youtube.force-ssl` scope, which is broader than read-only access.
@@ -30,7 +32,7 @@ Provider API support does not itself grant the application access. Meta Standard
 
 ### SP-00 — List existing publications
 
-The creator can request a normalized list of existing publications from a connected account for use in the Phase 1 community workflow. Preserve platform and external publication identifiers, pagination/cursor semantics inside the adapter boundary, and explicit partial/unsupported/failure outcomes. This read capability does not create, upload, schedule, or publish content.
+The creator can request a normalized, paginated list of existing publications from a connected account for use in the Phase 1 community workflow. Persist metadata for each successfully fetched page as defined in the [Social Content Synchronization PRD](social-content-synchronization.md). Preserve platform and external publication identifiers, pagination/cursor semantics inside the adapter boundary, and explicit partial/unsupported/failure outcomes. This capability does not create, upload, schedule, or publish content.
 
 ### SP-01 — Connect social accounts
 
@@ -63,14 +65,17 @@ A failed publication can be retried without creating an unintended duplicate ext
 ## 5. Acceptance Criteria
 
 - [ ] The creator can list existing publications from each connected account, retaining platform/external identifiers and seeing pagination and per-account partial/unsupported/failure outcomes.
+- [x] The YouTube publication list omits deleted/unavailable playlist placeholders without hiding valid videos in the same page.
 - [ ] Listing existing publications does not upload, create, schedule, or publish content.
 - [ ] The application rejects or blocks an operation when the account type, permissions, or platform capability is insufficient, and reports the reason.
 - [ ] YouTube, Instagram, Facebook, and TikTok OAuth callbacks validate a single-use, expiring state; token exchange, scope, identity, vault, and persistence failures map to stable errors and do not expose tokens.
 - [ ] Instagram uses its own professional-account Login flow and documented scopes; Facebook connects only the explicitly selected managed Page and stores its Page-scoped token.
 - [ ] Missing OAuth configuration does not prevent API startup; only the corresponding explicit connect request fails.
 - [ ] Account connection performs only authorization/token/identity/Page reads; it never sends a reply, publishes, or performs another social write.
+- [x] Profile settings list safe connected-account summaries, start OAuth flows without exposing client secrets, and require explicit Facebook Page selection before connection.
+- [x] Profile settings allow confirmed disconnection, remove local credentials and account-scoped cached data, and clearly state that provider-side authorization is not revoked.
 - [x] TikTok Business local OAuth is configured with an app-generated authorization URL, validates one-time state, exchanges the account code, requires `video.list`, `comment.list`, and `comment.list.manage`, and stores `open_id` and credentials in the tenant-scoped encrypted vault; deterministic tests do not call TikTok.
-- [ ] Verify the refresh flow against an approved TikTok Business app before live rollout. Keep remote revocation out of the application until its disconnect behavior is specified; if implemented, use the documented short-term account-token endpoint, never the advertiser-token revoke endpoint. Login Kit and Research API are not substitutes.
+- [ ] Verify the refresh flow against an approved TikTok Business app before live rollout. Keep provider-side revocation as a separate, deferred platform-specific capability; if implemented, use the documented short-term account-token endpoint, never the advertiser-token revoke endpoint. Login Kit and Research API are not substitutes.
 - [ ] Local OAuth test coverage uses deterministic HTTP doubles and does not establish that provider app access or live approval has been granted.
 - [ ] Selecting destinations presents separate title, description, and supported-tags fields for each; editing one destination does not change another or shared Content metadata.
 - [ ] Each selected destination receives its own Publication record and status.

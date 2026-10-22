@@ -15,3 +15,8 @@ export interface ResponseToneSettingsRepository {
   get(tenantId: string, socialAccountId: string): Promise<StoredResponseToneProfile | null>;
   save(tenantId: string, socialAccountId: string, profile: ResponseToneProfile): Promise<StoredResponseToneProfile>;
 }
+
+export interface TenantResponseToneSettingsRepository {
+  get(tenantId: string): Promise<StoredResponseToneProfile | null>;
+  save(tenantId: string, profile: ResponseToneProfile): Promise<StoredResponseToneProfile>;
+}

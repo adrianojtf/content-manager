@@ -1,5 +1,39 @@
 import { CreatorDeskApi, CreatorDeskApiError } from './api.mjs';
-import { apiErrorMessage, applyStaticTranslations, formatNumber, t, uiLocale } from './i18n.mjs';
+import { resolveSelectedAccountId } from './account-selection.mjs';
+import {
+  approveSemiAutomaticReplies,
+  eligibleSemiAutomaticReplyRows,
+  generateSemiAutomaticReplies,
+  loadSemiAutomaticReplyComments,
+  sendApprovedSemiAutomaticReplies,
+} from './bulk-replies.mjs';
+import {
+  applyUiFontSizePreference,
+  isSupportedUiFontSize,
+  readUiFontSizePreference,
+  writeUiFontSizePreference,
+} from './ui-font-size.mjs';
+import {
+  apiErrorMessage,
+  applyStaticTranslations,
+  formatNumber,
+  readUiLocale,
+  setUiLocale,
+  socialSyncFailureMessage,
+  t,
+  uiLocale,
+  writeUiLocale,
+} from './i18n.mjs';
+import { openOAuthPopup } from './oauth-flow.mjs';
+import {
+  defaultPublicationPageSize,
+  isPublicationPageSize,
+  publicationPageRequest,
+  recordPublicationPageCursor,
+} from './publication-pagination.mjs';
+import { syncPublicationPage } from './publication-page-sync.mjs';
+import { applyThemePreference, readThemePreference, writeThemePreference } from './theme.mjs';
+import { replaceHtmlPreservingScroll } from './scroll-preservation.mjs';
 import {
   commentKey,
   effectiveAnalysis,
@@ -8,27 +42,49 @@ import {
   latestResponseVersion,
   networkInfo,
   publicationKey,
+  renderAIProviderSettings,
+  renderAppearanceSettings,
+  renderBulkReplyDialog,
   renderAccountOptions,
+  renderConnectionSettings,
   renderEmptyState,
+  renderPublicationPagination,
   renderPublicationCard,
   renderSocialTabs,
   renderStats,
+  renderVerifiedReleaseSchedulePanel,
   responseVersionDetails,
 } from './view.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const toneDefaults = Object.freeze({ primaryTone: 'FRIENDLY', modifiers: [], customNote: null });
+const verifiedScheduleDays = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 const apiBaseUrl = document.querySelector('meta[name="api-base-url"]')?.content ?? '';
 const api = new CreatorDeskApi({ baseUrl: apiBaseUrl });
+const initialTheme = readThemePreference();
+const initialUiFontSize = readUiFontSizePreference();
+setUiLocale(readUiLocale());
+applyThemePreference(document.documentElement, initialTheme);
+applyUiFontSizePreference(document.documentElement, initialUiFontSize);
 const state = {
+  screen: window.location.hash === '#connections' ? 'connections' : 'comments',
+  theme: initialTheme,
   activeNetwork: 'instagram',
   selectedAccountId: null,
   search: '',
   statusFilter: 'all',
   language: 'pt-BR',
+  uiFontSize: initialUiFontSize,
+  fontSettingsOpen: false,
   accountResults: new Map(),
   publications: new Map(),
+  commentSummary: null,
+  commentSummaryError: false,
   publicationCursors: new Map(),
+  publicationCursorHistory: new Map(),
+  publicationPageIndexes: new Map(),
+  publicationLoadingAccounts: new Set(),
+  publicationPageSize: defaultPublicationPageSize,
   comments: new Map(),
   workflows: new Map(),
   workflowErrors: new Map(),
@@ -39,17 +95,49 @@ const state = {
   busy: new Set(),
   toneProfile: { ...toneDefaults },
   toneAccountId: null,
-  lastNetworkSync: new Map(),
+  toneScope: 'account',
+  toneSource: null,
+  toneGlobalLoaded: false,
+  verifiedSchedule: {
+    scope: 'ACCOUNT',
+    accountId: null,
+    schedule: null,
+    source: null,
+    draft: { enabled: false, daysOfWeek: [], localTime: '', timeZone: 'America/Sao_Paulo' },
+    open: false,
+    loading: false,
+    saving: false,
+    dirty: false,
+    error: null,
+  },
+  pageSyncProgress: null,
+  pageSyncFeedback: null,
   loadingPublications: true,
   publicationsError: null,
   searchLoading: false,
+  connectedAccounts: [],
+  connectionsLoading: false,
+  connectionsError: null,
+  connectingNetworks: new Set(),
+  disconnectingAccounts: new Set(),
+  facebookSelection: null,
+  selectedFacebookPageId: null,
+  aiSettings: {
+    loading: false,
+    saving: false,
+    accessSaving: false,
+    error: null,
+    access: null,
+    active: null,
+    models: [],
+  },
+  bulkReply: null,
 };
 let searchTimer;
+let bulkReplyReturnFocus = null;
 
 function messageFor(error) {
-  if (error instanceof CreatorDeskApiError) {
-    return apiErrorMessage(error.code);
-  }
+  if (error instanceof CreatorDeskApiError || typeof error?.code === 'string') return apiErrorMessage(error.code);
   return t('error.unexpected');
 }
 
@@ -89,10 +177,7 @@ function activeLoadedComments(publications = activePublications()) {
 }
 
 function ensureSelectedAccount() {
-  const accounts = activeAccounts();
-  if (state.selectedAccountId && !accounts.some((account) => account.id === state.selectedAccountId)) {
-    state.selectedAccountId = null;
-  }
+  state.selectedAccountId = resolveSelectedAccountId(activeAccounts(), state.selectedAccountId);
 }
 
 function renderAccountFailures() {
@@ -130,116 +215,459 @@ function visiblePublicationModel(publications) {
   return { visible, comments: filteredComments };
 }
 
+function syncGlobalFontSettingsControl() {
+  const toggle = $('#globalFontSettingsToggle');
+  const panel = $('#globalFontSettingsPanel');
+  const select = $('#uiFontSizeSelect');
+  if (toggle) toggle.setAttribute('aria-expanded', String(state.fontSettingsOpen));
+  if (panel) panel.hidden = !state.fontSettingsOpen;
+  if (select) select.value = state.uiFontSize;
+}
+
 function render() {
+  const settingsVisible = state.screen === 'connections';
+  $('#commentsScreen').hidden = settingsVisible;
+  $('#connectionsScreen').hidden = !settingsVisible;
+  syncGlobalFontSettingsControl();
+  const bulkDialog = $('#bulkReplyDialog');
+  const bulkDialogFocus = captureBulkDialogFocus(bulkDialog);
+  const bulkModel = state.bulkReply
+    ? { ...state.bulkReply, sendableCount: eligibleSemiAutomaticReplyRows(state.bulkReply.rows).length }
+    : state.bulkReply;
+  replaceHtmlPreservingScroll(
+    bulkDialog,
+    settingsVisible ? '' : renderBulkReplyDialog(bulkModel),
+    () => bulkDialog.querySelector('.bulk-dialog-content'),
+  );
+  restoreBulkDialogFocus(bulkDialog, bulkDialogFocus);
+  bulkDialog.hidden = settingsVisible || !state.bulkReply?.open;
+  $('#breadcrumbCurrent').textContent = t(settingsVisible ? 'settings.title' : 'app.pageTitle');
+  document.querySelectorAll('[data-view]').forEach((link) => {
+    const active = link.dataset.view === state.screen;
+    link.classList.toggle('active', active);
+    if (active) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  });
+  if (settingsVisible) {
+    $('#appearanceSettings').innerHTML = renderAppearanceSettings(state.theme, uiLocale);
+    $('#aiProviderSettings').innerHTML = renderAIProviderSettings(state.aiSettings);
+    const key = state.connectedAccounts.length === 1 ? 'settings.accountsCount.one' : 'settings.accountsCount.other';
+    $('#connectedAccountCount').textContent = t(key, { count: formatNumber(state.connectedAccounts.length) });
+    $('#connectedAccounts').innerHTML = renderConnectionSettings(state.connectedAccounts, {
+      loading: state.connectionsLoading,
+      error: state.connectionsError,
+      connecting: state.connectingNetworks,
+      disconnectingAccounts: state.disconnectingAccounts,
+      facebookSelection: state.facebookSelection,
+      selectedFacebookPageId: state.selectedFacebookPageId,
+    });
+    return;
+  }
   ensureSelectedAccount();
   const tabs = $('#socialTabs');
+  const summaryPlatforms = new Map((state.commentSummary?.platforms ?? []).map((entry) => [entry.platform, entry]));
   const networkCounts = Object.fromEntries(Object.keys(networkInfo).map((network) => [
     network,
-    [...state.accountResults.values()]
-      .filter((result) => result.account.platform === network)
-      .reduce((count, result) => count + (state.publications.get(result.account.id)?.items.length ?? 0), 0),
+    summaryPlatforms.get(network)?.unansweredComments ?? null,
   ]));
   tabs.innerHTML = renderSocialTabs(state.activeNetwork, networkCounts);
 
   const accounts = activeAccounts();
+  const pageSyncing = state.busy.has('page-sync');
+  const pageLoading = state.loadingPublications || state.publicationLoadingAccounts.size > 0;
+  const pageInteractionLocked = pageSyncing || pageLoading || state.searchLoading;
+  tabs.querySelectorAll('[data-network]').forEach((tab) => { tab.disabled = pageInteractionLocked; });
   const accountFilter = $('#accountFilter');
   accountFilter.innerHTML = renderAccountOptions(accounts, state.selectedAccountId);
-  accountFilter.disabled = accounts.length === 0;
-  $('#syncNetwork').disabled = accounts.length === 0 || state.busy.has('network-sync');
+  accountFilter.disabled = accounts.length === 0 || pageInteractionLocked;
+  const scheduleToggle = $('#verifiedReleaseScheduleToggle');
+  scheduleToggle.disabled = pageInteractionLocked;
+  scheduleToggle.setAttribute('aria-expanded', String(state.verifiedSchedule.open));
+  const schedulePanel = $('#verifiedReleaseSchedulePanel');
+  const focusedScheduleControl = schedulePanel.contains(document.activeElement) ? document.activeElement : null;
+  const focusedScheduleId = focusedScheduleControl?.id;
+  const focusedScheduleDay = focusedScheduleControl?.dataset?.dayOfWeek;
+  const focusedScheduleRole = focusedScheduleControl?.dataset?.role;
+  const focusedScheduleAction = focusedScheduleControl?.dataset?.action;
+  const selectionStart = typeof focusedScheduleControl?.selectionStart === 'number' ? focusedScheduleControl.selectionStart : null;
+  const selectionEnd = typeof focusedScheduleControl?.selectionEnd === 'number' ? focusedScheduleControl.selectionEnd : null;
+  schedulePanel.hidden = !state.verifiedSchedule.open;
+  schedulePanel.innerHTML = renderVerifiedReleaseSchedulePanel({
+    ...state.verifiedSchedule,
+    accountSelected: Boolean(state.selectedAccountId),
+    canSave: canSaveVerifiedSchedule(),
+  });
+  if (focusedScheduleId || focusedScheduleDay || focusedScheduleRole || focusedScheduleAction) {
+    const selector = focusedScheduleDay
+      ? `[data-day-of-week="${focusedScheduleDay}"]`
+      : focusedScheduleId
+        ? `#${focusedScheduleId}`
+        : focusedScheduleRole
+          ? `[data-role="${focusedScheduleRole}"]`
+          : `[data-action="${focusedScheduleAction}"]`;
+    const nextControl = schedulePanel.querySelector(selector);
+    nextControl?.focus({ preventScroll: true });
+    if (selectionStart !== null && selectionEnd !== null) {
+      try {
+        nextControl?.setSelectionRange(selectionStart, selectionEnd);
+      } catch {
+        // Time inputs do not expose text selection in all browsers.
+      }
+    }
+  }
+  $('#publicationPageSize').value = String(state.publicationPageSize);
+  $('#publicationPageSize').disabled = pageInteractionLocked;
+  $('#searchInput').disabled = pageInteractionLocked;
+  $('#statusFilter').disabled = pageInteractionLocked;
+  const publicationLoadingStatus = $('#publicationLoadingStatus');
+  const publicationIsLoading = state.loadingPublications || state.publicationLoadingAccounts.size > 0;
+  publicationLoadingStatus.hidden = !publicationIsLoading;
+  publicationLoadingStatus.textContent = state.publicationLoadingAccounts.size > 0
+    ? t('publication.loadingPage')
+    : state.loadingPublications
+      ? t('publication.loading')
+      : '';
 
   const allPublications = activePublications();
   const selectedPublications = state.selectedAccountId
     ? allPublications.filter(({ account }) => account.id === state.selectedAccountId)
     : allPublications;
+  const filtered = visiblePublicationModel(selectedPublications);
+  const syncButton = $('#syncPageButton');
+  const syncProgress = state.pageSyncProgress;
+  const syncLabel = $('#syncPageLabel');
+  const syncIcon = $('#syncPageIcon');
+  const syncSpinner = $('#syncPageSpinner');
+  const syncStatus = $('#syncPageStatus');
+  syncButton.disabled = filtered.visible.length === 0
+    || state.loadingPublications
+    || state.publicationLoadingAccounts.size > 0
+    || state.searchLoading
+    || state.busy.has('page-sync');
+  syncButton.setAttribute('aria-busy', String(Boolean(syncProgress)));
+  syncLabel.textContent = syncProgress ? t('toolbar.syncPageBusy') : t('toolbar.syncPage');
+  syncButton.title = t(syncProgress ? 'toolbar.syncPageBusy' : 'toolbar.syncPage');
+  syncIcon.hidden = Boolean(syncProgress);
+  syncSpinner.hidden = !syncProgress;
+  syncStatus.hidden = !syncProgress && !state.pageSyncFeedback;
+  syncStatus.textContent = syncProgress
+    ? t('toolbar.syncPageProgress', {
+      completed: formatNumber(syncProgress.completed),
+      total: formatNumber(syncProgress.total),
+      name: syncProgress.currentName,
+    })
+    : state.pageSyncFeedback ?? '';
   const selectedComments = activeLoadedComments(selectedPublications);
   $('#networkTitle').textContent = t(networkInfo[state.activeNetwork]?.nameKey ?? 'nav.comments');
   const totalForNetwork = allPublications.length;
-  const syncText = state.lastNetworkSync.get(state.activeNetwork)
-    ? t('stats.syncTime', { date: formatDate(state.lastNetworkSync.get(state.activeNetwork)) })
-    : formatLastSync(selectedComments);
+  const syncText = formatLastSync(selectedComments);
   const publicationCount = t(totalForNetwork === 1 ? 'stats.networkSummary.one' : 'stats.networkSummary.other', { count: formatNumber(totalForNetwork) });
   $('#networkSubtitle').textContent = `${state.searchLoading ? `${t('toolbar.searching')} · ` : ''}${publicationCount} · ${syncText}`;
   $('#stats').innerHTML = renderStats({
-    publications: selectedPublications.length,
-    comments: selectedComments,
-    workflows: state.workflows,
-    unavailable: Boolean(state.publicationsError),
+    summary: state.commentSummary?.totals ?? null,
+    unavailable: state.commentSummaryError,
   });
 
-  const filtered = visiblePublicationModel(selectedPublications);
   const viewModel = { ...state, comments: filtered.comments };
+  const pageControls = activeAccounts()
+    .filter((account) => !state.selectedAccountId || account.id === state.selectedAccountId)
+    .map((account) => renderPublicationPagination(account, {
+      pageIndex: state.publicationPageIndexes.get(account.id) ?? 0,
+      hasPrevious: (state.publicationPageIndexes.get(account.id) ?? 0) > 0,
+      hasNext: Boolean(state.publicationCursors.get(account.id)),
+        loading: pageInteractionLocked || state.publicationLoadingAccounts.has(account.id),
+    }))
+    .join('');
+  let contentMarkup;
   if (state.loadingPublications && state.accountResults.size === 0) {
-    $('#contentList').innerHTML = `<div class="loading-state"><span class="spinner"></span> ${t('publication.loading')}</div>`;
+    contentMarkup = `<div class="loading-state"><span class="spinner"></span> ${t('publication.loading')}</div>`;
   } else if (state.publicationsError && state.accountResults.size === 0) {
-    $('#contentList').innerHTML = `<div class="error-state">${escapeHtml(state.publicationsError)}<p class="error-message">${t('error.apiDownDetail')}</p><button class="button small" type="button" data-action="refresh-publications">${t('publication.retry')}</button></div>`;
+    contentMarkup = `<div class="error-state">${escapeHtml(state.publicationsError)}<p class="error-message">${t('error.apiDownDetail')}</p><button class="button small" type="button" data-action="refresh-publications">${t('publication.retry')}</button></div>`;
   } else if (!accounts.length) {
-    $('#contentList').innerHTML = renderEmptyState(
+    contentMarkup = renderEmptyState(
       t('empty.noAccountsTitle'),
       t('empty.noAccountsDescription'),
       t('empty.refresh'),
       'refresh-publications',
-    );
+    ) + pageControls;
   } else if (filtered.visible.length === 0 && !allPublications.length && renderAccountFailures()) {
-    $('#contentList').innerHTML = renderAccountFailures();
+    contentMarkup = `${renderAccountFailures()}${pageControls}`;
   } else if (filtered.visible.length === 0) {
-    $('#contentList').innerHTML = renderEmptyState(
+    contentMarkup = renderEmptyState(
       t(state.search || state.statusFilter !== 'all' ? 'empty.noResultsTitle' : 'empty.noPublicationsTitle'),
       t(state.search || state.statusFilter !== 'all' ? 'empty.noResultsDescription' : 'empty.noPublicationsDescription'),
       t(state.search || state.statusFilter !== 'all' ? 'empty.clearFilters' : ''),
       'clear-filters',
-    );
+    ) + pageControls;
   } else {
     const cards = filtered.visible.map((publication) => renderPublicationCard(publication, viewModel)).join('');
-    const moreAccounts = activeAccounts().filter((account) => state.publicationCursors.get(account.id));
-    const loadMore = moreAccounts.map((account) => `<div class="load-more"><button class="button small" type="button" data-action="load-more-publications" data-account-id="${escapeHtml(account.id)}">${t('publication.pagination', { name: escapeHtml(account.displayName || account.externalAccountId) })}</button></div>`).join('');
-    $('#contentList').innerHTML = `${renderAccountFailures()}${cards}${loadMore}`;
+    contentMarkup = `${renderAccountFailures()}${cards}${pageControls}`;
+  }
+  const contentList = $('#contentList');
+  if (pageSyncing && filtered.visible.length > 0) {
+    if (!contentList.querySelector('.page-sync-overlay')) {
+      const overlay = document.createElement('div');
+      overlay.className = 'page-sync-overlay';
+      overlay.setAttribute('role', 'status');
+      overlay.innerHTML = `<span class="page-sync-teacup" aria-hidden="true">☕</span><span class="spinner" aria-hidden="true"></span><span>${escapeHtml(t('toolbar.syncingComments'))}</span>`;
+      contentList.prepend(overlay);
+    }
+  } else {
+    contentList.querySelector('.page-sync-overlay')?.remove();
+    replaceHtmlPreservingScroll(contentList, contentMarkup, () => document.scrollingElement);
   }
 
 }
 
-async function refreshPublications({ accountId, append = false, quiet = false } = {}) {
-  if (!quiet) {
-    state.loadingPublications = true;
-    render();
+function prunePublicationPageCache() {
+  const currentPublicationKeys = new Set();
+  for (const [accountId, page] of state.publications) {
+    for (const item of page.items) currentPublicationKeys.add(publicationKey(accountId, item.externalPublicationId));
   }
+
+  for (const key of state.comments.keys()) {
+    if (!currentPublicationKeys.has(key)) state.comments.delete(key);
+  }
+
+  const currentCommentKeys = new Set();
+  for (const page of state.comments.values()) {
+    for (const comment of page.items ?? []) currentCommentKeys.add(commentKey(comment.socialAccountId, comment.externalCommentId));
+  }
+  for (const cache of [state.workflows, state.workflowErrors]) {
+    for (const key of cache.keys()) {
+      if (!currentCommentKeys.has(key)) cache.delete(key);
+    }
+  }
+  for (const cache of [state.expandedPublications]) {
+    for (const key of cache) {
+      if (!currentPublicationKeys.has(key)) cache.delete(key);
+    }
+  }
+  for (const cache of [state.expandedComments, state.workflowLoading]) {
+    for (const key of cache) {
+      if (!currentCommentKeys.has(key)) cache.delete(key);
+    }
+  }
+}
+
+async function refreshPublications({ accountId, cursor } = {}) {
+  if (accountId) {
+    state.publicationLoadingAccounts.add(accountId);
+  } else {
+    state.loadingPublications = true;
+  }
+  state.pageSyncFeedback = null;
+  render();
   try {
-    const cursor = accountId ? state.publicationCursors.get(accountId) : undefined;
-    const results = await api.listPublications({ accountId, cursor });
+    const results = await api.listPublications({
+      accountId,
+      cursor,
+      pageSize: state.publicationPageSize,
+      platform: state.activeNetwork,
+    });
     if (!accountId) state.publicationsError = null;
-    if (!accountId && !append) {
+    if (!accountId) {
       state.accountResults.clear();
       state.publications.clear();
       state.publicationCursors.clear();
+      state.publicationCursorHistory.clear();
+      state.publicationPageIndexes.clear();
     }
     for (const result of results) {
       state.accountResults.set(result.account.id, result);
-      if (result.status !== 'available') continue;
-      const previous = append ? state.publications.get(result.account.id)?.items ?? [] : [];
-      state.publications.set(result.account.id, { items: [...previous, ...result.items] });
+      if (result.status !== 'available') {
+        state.publications.delete(result.account.id);
+        state.publicationCursors.delete(result.account.id);
+        state.publicationCursorHistory.delete(result.account.id);
+        state.publicationPageIndexes.delete(result.account.id);
+        continue;
+      }
+      state.publications.set(result.account.id, { items: result.items });
       if (result.nextCursor) state.publicationCursors.set(result.account.id, result.nextCursor);
       else state.publicationCursors.delete(result.account.id);
+      if (!accountId) {
+        state.publicationCursorHistory.set(result.account.id, [undefined]);
+        state.publicationPageIndexes.set(result.account.id, 0);
+      }
     }
+    prunePublicationPageCache();
+    return true;
   } catch (error) {
     if (!accountId) state.publicationsError = messageFor(error);
     showToast(messageFor(error), { error: true });
+    return false;
   } finally {
-    state.loadingPublications = false;
+    if (accountId) state.publicationLoadingAccounts.delete(accountId);
+    else state.loadingPublications = false;
     render();
   }
+}
+
+async function loadCommentSummary() {
+  try {
+    state.commentSummary = await api.getCommentSummary();
+    state.commentSummaryError = false;
+  } catch {
+    state.commentSummaryError = true;
+  }
+  render();
+}
+
+async function changePublicationPage(accountId, direction) {
+  if (state.busy.has('page-sync') || state.searchLoading || state.loadingPublications || state.publicationLoadingAccounts.has(accountId)) return;
+  const currentIndex = state.publicationPageIndexes.get(accountId) ?? 0;
+  const history = state.publicationCursorHistory.get(accountId) ?? [undefined];
+  const pageRequest = publicationPageRequest({
+    direction,
+    pageIndex: currentIndex,
+    cursors: history,
+    nextCursor: state.publicationCursors.get(accountId),
+  });
+  if (!pageRequest) return;
+
+  const loaded = await refreshPublications({ accountId, cursor: pageRequest.cursor });
+  if (!loaded) return;
+  state.publicationCursorHistory.set(
+    accountId,
+    recordPublicationPageCursor(history, pageRequest.pageIndex, pageRequest.cursor),
+  );
+  state.publicationPageIndexes.set(accountId, pageRequest.pageIndex);
+  prunePublicationPageCache();
+  render();
+  void syncCurrentPublicationPage();
+}
+
+async function loadConnectedAccounts() {
+  state.connectionsLoading = true;
+  state.connectionsError = null;
+  render();
+  try {
+    state.connectedAccounts = await api.listAccounts();
+  } catch (error) {
+    state.connectionsError = messageFor(error);
+  } finally {
+    state.connectionsLoading = false;
+    render();
+  }
+}
+
+async function loadAIProviderSettings() {
+  state.aiSettings.loading = true;
+  state.aiSettings.error = null;
+  render();
+  try {
+    const [access, settings] = await Promise.all([
+      api.getAIProviderAccess(),
+      api.getResponseGenerationSettings(),
+    ]);
+    state.aiSettings.access = access;
+    state.aiSettings.active = settings.active;
+    state.aiSettings.models = settings.models;
+  } catch (error) {
+    state.aiSettings.error = messageFor(error);
+  } finally {
+    state.aiSettings.loading = false;
+    render();
+  }
+}
+
+async function saveAIProviderModel(event) {
+  event.preventDefault();
+  const value = $('#responseGenerationModel')?.value ?? '';
+  const separator = value.indexOf('/');
+  if (separator < 1 || separator === value.length - 1) return;
+  state.aiSettings.saving = true;
+  render();
+  try {
+    state.aiSettings.active = await api.saveResponseGenerationSettings({
+      provider: value.slice(0, separator),
+      model: value.slice(separator + 1),
+    });
+    showToast(t('aiSettings.saved'));
+  } catch (error) {
+    showToast(t('aiSettings.saveFailed', { message: messageFor(error) }), { error: true });
+  } finally {
+    state.aiSettings.saving = false;
+    render();
+  }
+}
+
+async function saveAIProviderAccess(event) {
+  event.preventDefault();
+  const form = event.target;
+  const data = new FormData(form);
+  const update = {
+    geminiDataUsePolicy: data.get('geminiDataUsePolicy'),
+  };
+  for (const key of ['jevApiKey', 'geminiApiKey', 'openaiApiKey']) {
+    const clearName = `clear${key[0].toUpperCase()}${key.slice(1)}`;
+    const secret = form.elements.namedItem(key);
+    if (data.get(clearName) === 'true') update[key] = null;
+    else if (typeof secret?.value === 'string' && secret.value.trim()) update[key] = secret.value;
+  }
+
+  const button = form.querySelector('button[type="submit"]');
+  state.aiSettings.accessSaving = true;
+  button.disabled = true;
+  button.textContent = t('aiSettings.savingAccess');
+  try {
+    state.aiSettings.access = await api.saveAIProviderAccess(update);
+    state.aiSettings.accessSaving = false;
+    showToast(t('aiSettings.accessSaved'));
+    render();
+  } catch (error) {
+    state.aiSettings.accessSaving = false;
+    button.disabled = !state.aiSettings.access?.storageReady;
+    button.textContent = t('aiSettings.saveAccess');
+    showToast(t('aiSettings.accessSaveFailed', { message: messageFor(error) }), { error: true });
+  }
+}
+
+async function setScreen(screen) {
+  if (state.busy.has('page-sync') || state.searchLoading || state.loadingPublications
+    || state.publicationLoadingAccounts.size > 0 || state.bulkReply?.busy) return;
+  if (screen !== 'comments' && screen !== 'connections') return;
+  if (state.bulkReply?.open) {
+    closeBulkReply();
+    if (state.bulkReply?.open) return;
+  }
+  state.screen = screen;
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${screen}`);
+  render();
+  if (screen === 'connections') {
+    await Promise.all([loadConnectedAccounts(), loadAIProviderSettings()]);
+    return;
+  }
+  const [publicationsReady] = await Promise.all([refreshPublications(), loadCommentSummary()]);
+  if (publicationsReady) void syncCurrentPublicationPage();
+  await Promise.all([
+    loadToneProfile(state.selectedAccountId),
+    loadVerifiedReleaseSchedule(state.selectedAccountId),
+  ]);
 }
 
 async function loadComments(accountId, publicationId, { force = false } = {}) {
   const key = publicationKey(accountId, publicationId);
   const previous = state.comments.get(key);
   if (previous?.loading || (previous && !force)) return previous;
-  state.comments.set(key, { ...(previous ?? {}), items: previous?.items ?? [], loading: true, error: null });
+  state.comments.set(key, {
+    ...(previous ?? {}),
+    items: previous?.items ?? [],
+    loading: true,
+    loadErrorCode: null,
+  });
   render();
   try {
     const items = await api.listComments(accountId, publicationId);
-    state.comments.set(key, { ...state.comments.get(key), items, loading: false, error: null });
+    state.comments.set(key, { ...state.comments.get(key), items, loading: false, loadErrorCode: null });
     await loadWorkflowSummaries(items);
   } catch (error) {
-    state.comments.set(key, { ...state.comments.get(key), loading: false, error: messageFor(error) });
+    const errorCode = error?.code ?? 'SOCIAL_COMMENT_SYNC_FAILED';
+    state.comments.set(key, {
+      ...state.comments.get(key),
+      loading: false,
+      loadErrorCode: errorCode,
+    });
   }
   render();
   return state.comments.get(key);
@@ -308,26 +736,67 @@ async function refreshWorkflowQuietly(accountId, externalCommentId) {
   }
 }
 
-async function loadToneProfile(accountId) {
-  state.toneAccountId = accountId;
-  state.toneProfile = { ...toneDefaults };
-  if (!accountId) {
+async function loadToneProfile(accountId, { force = false } = {}) {
+  if (state.toneScope === 'global' && !force && state.toneGlobalLoaded) {
     syncToneControls();
     return;
   }
+  state.toneAccountId = accountId;
+  state.toneProfile = { ...toneDefaults };
+  state.toneSource = null;
+  if (state.toneScope === 'account' && !accountId) {
+    syncToneControls();
+    return;
+  }
+  const scope = state.toneScope;
   syncToneControls(t('tone.loading'));
   try {
-    state.toneProfile = await api.getToneProfile(accountId);
+    const view = scope === 'global'
+      ? await api.getGlobalToneProfile()
+      : await api.getToneProfileView(accountId);
+    if (state.toneScope !== scope || (scope === 'account' && state.selectedAccountId !== accountId)) return;
+    state.toneProfile = view?.profile ?? { ...toneDefaults };
+    state.toneSource = view?.source ?? 'DEFAULT';
+    if (scope === 'global') state.toneGlobalLoaded = true;
     syncToneControls();
   } catch (error) {
+    if (state.toneScope !== scope || (scope === 'account' && state.selectedAccountId !== accountId)) return;
     syncToneControls(t('tone.loadFailed', { message: messageFor(error) }));
   }
 }
 
+function setToneScope(scope) {
+  if (scope !== 'account' && scope !== 'global') return;
+  if (state.toneScope === scope) return;
+  state.toneScope = scope;
+  void loadToneProfile(state.selectedAccountId, { force: true });
+}
+
+function defaultToneStatus() {
+  if (state.toneScope === 'global') {
+    return t(state.toneSource === 'TENANT' ? 'tone.globalLoaded' : 'tone.globalDefault');
+  }
+  if (!state.toneAccountId) return t('tone.noAccount');
+  if (state.toneSource === 'TENANT') return t('tone.inheritedStatus');
+  return t(state.toneSource === 'DEFAULT' ? 'tone.defaultStatus' : 'tone.loadedStatus');
+}
+
 function syncToneControls(status) {
-  const available = Boolean(state.selectedAccountId);
+  const globalScope = state.toneScope === 'global';
+  const available = globalScope || Boolean(state.selectedAccountId);
   $('#saveToneProfile').disabled = !available || state.busy.has('tone-save');
-  $('#toneSettingsToggle').disabled = !available;
+  $('#toneSettingsToggle').disabled = false;
+  const toneHeading = $('#toneHeading');
+  const toneDescription = $('#toneDescription');
+  toneHeading.dataset.i18n = globalScope ? 'tone.headingGlobal' : 'tone.heading';
+  toneDescription.dataset.i18n = globalScope ? 'tone.descriptionGlobal' : 'tone.description';
+  toneHeading.textContent = t(toneHeading.dataset.i18n);
+  toneDescription.textContent = t(toneDescription.dataset.i18n);
+  document.querySelectorAll('[data-tone-scope]').forEach((button) => {
+    const active = button.dataset.toneScope === state.toneScope;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
   $('#tonePrimary').value = state.toneProfile.primaryTone ?? toneDefaults.primaryTone;
   $('#toneNote').value = state.toneProfile.customNote ?? '';
   $('#toneNoteCount').textContent = `${$('#toneNote').value.length}/500`;
@@ -336,8 +805,162 @@ function syncToneControls(status) {
     input.checked = selected.has(input.dataset.toneModifier);
     input.disabled = !input.checked && selected.size >= 2;
   });
-  $('#toneProfileStatus').textContent = status
-    ?? t(state.toneAccountId ? 'tone.loadedStatus' : 'tone.noAccount');
+  $('#toneProfileStatus').textContent = status ?? defaultToneStatus();
+}
+
+function emptyVerifiedScheduleDraft() {
+  return { enabled: false, daysOfWeek: [], localTime: '', timeZone: 'America/Sao_Paulo' };
+}
+
+function verifiedScheduleDraft(schedule) {
+  return schedule
+    ? {
+      enabled: schedule.enabled,
+      daysOfWeek: [...schedule.daysOfWeek],
+      localTime: schedule.localTime,
+      timeZone: schedule.timeZone,
+    }
+    : emptyVerifiedScheduleDraft();
+}
+
+function isValidVerifiedScheduleDraft(draft) {
+  if (!draft || typeof draft.enabled !== 'boolean'
+    || !Array.isArray(draft.daysOfWeek)
+    || draft.daysOfWeek.some((day) => !verifiedScheduleDays.includes(day))
+    || new Set(draft.daysOfWeek).size !== draft.daysOfWeek.length
+    || (draft.enabled && draft.daysOfWeek.length === 0)
+    || !/^([01]\d|2[0-3]):[0-5]\d$/.test(draft.localTime)) {
+    return false;
+  }
+  try {
+    return typeof draft.timeZone === 'string'
+      && draft.timeZone.length > 0
+      && draft.timeZone.trim() === draft.timeZone
+      && Boolean(new Intl.DateTimeFormat('en-US', { timeZone: draft.timeZone }).format(0));
+  } catch {
+    return false;
+  }
+}
+
+function canSaveVerifiedSchedule() {
+  return (state.verifiedSchedule.scope === 'GLOBAL' || Boolean(state.selectedAccountId))
+    && !state.verifiedSchedule.loading
+    && !state.verifiedSchedule.saving
+    && state.verifiedSchedule.error?.kind !== 'load';
+}
+
+function updateVerifiedScheduleDraftFromPanel(panel) {
+  const daysOfWeek = [...panel.querySelectorAll('[data-day-of-week]:checked')]
+    .map((input) => input.dataset.dayOfWeek);
+  state.verifiedSchedule.draft = {
+    enabled: panel.querySelector('[data-role="verified-schedule-enabled"]').checked,
+    daysOfWeek,
+    localTime: panel.querySelector('#verifiedScheduleLocalTime').value,
+    timeZone: panel.querySelector('#verifiedScheduleTimeZone').value,
+  };
+  state.verifiedSchedule.dirty = true;
+  state.verifiedSchedule.error = null;
+  const status = panel.querySelector('.verified-schedule-status');
+  if (status) {
+    status.classList.remove('has-error');
+    status.textContent = t(state.verifiedSchedule.schedule ? 'schedule.unsavedWithSaved' : 'schedule.unsaved');
+  }
+  const saveButton = panel.querySelector('[data-role="verified-schedule-save"]');
+  if (saveButton) saveButton.disabled = !canSaveVerifiedSchedule();
+}
+
+function setVerifiedScheduleScope(scope) {
+  if (scope !== 'ACCOUNT' && scope !== 'GLOBAL') return;
+  if (state.verifiedSchedule.scope === scope) return;
+  state.verifiedSchedule.scope = scope;
+  void loadVerifiedReleaseSchedule(state.selectedAccountId, { force: true });
+}
+
+async function loadVerifiedReleaseSchedule(accountId, { force = false } = {}) {
+  const scope = state.verifiedSchedule.scope;
+  if (scope === 'GLOBAL' && !force && state.verifiedSchedule.source !== null) return;
+  if (scope === 'ACCOUNT' && accountId && accountId === state.verifiedSchedule.accountId
+    && state.verifiedSchedule.dirty && !force) return;
+  const open = state.verifiedSchedule.open;
+  state.verifiedSchedule = {
+    scope,
+    accountId,
+    schedule: null,
+    source: null,
+    draft: emptyVerifiedScheduleDraft(),
+    open,
+    loading: scope === 'GLOBAL' || Boolean(accountId),
+    saving: false,
+    dirty: false,
+    error: null,
+  };
+  render();
+  if (scope === 'ACCOUNT' && !accountId) return;
+
+  const isStale = () => state.verifiedSchedule.scope !== scope
+    || (scope === 'ACCOUNT' && (state.selectedAccountId !== accountId || state.verifiedSchedule.accountId !== accountId));
+  try {
+    const view = scope === 'GLOBAL'
+      ? await api.getGlobalVerifiedReleaseSchedule()
+      : await api.getVerifiedReleaseScheduleView(accountId);
+    if (isStale()) return;
+    state.verifiedSchedule.schedule = view?.schedule ?? null;
+    state.verifiedSchedule.source = view?.source ?? 'UNCONFIGURED';
+    state.verifiedSchedule.draft = verifiedScheduleDraft(view?.schedule ?? null);
+    state.verifiedSchedule.loading = false;
+  } catch (error) {
+    if (isStale()) return;
+    state.verifiedSchedule.loading = false;
+    state.verifiedSchedule.error = { kind: 'load', code: error?.code ?? 'VERIFIED_RELEASE_SCHEDULE_FAILED' };
+  }
+  render();
+}
+
+async function saveVerifiedReleaseSchedule(event) {
+  event.preventDefault();
+  const globalScope = state.verifiedSchedule.scope === 'GLOBAL';
+  const accountId = state.selectedAccountId;
+  const panel = $('#verifiedReleaseSchedulePanel');
+  updateVerifiedScheduleDraftFromPanel(panel);
+  if ((!globalScope && !accountId) || !canSaveVerifiedSchedule()) return;
+  if (!isValidVerifiedScheduleDraft(state.verifiedSchedule.draft)) {
+    state.verifiedSchedule.error = { kind: 'validation', key: 'schedule.invalid' };
+    render();
+    return;
+  }
+
+  const config = {
+    enabled: state.verifiedSchedule.draft.enabled,
+    daysOfWeek: [...state.verifiedSchedule.draft.daysOfWeek],
+    localTime: state.verifiedSchedule.draft.localTime,
+    timeZone: state.verifiedSchedule.draft.timeZone,
+  };
+  state.verifiedSchedule.saving = true;
+  state.verifiedSchedule.error = null;
+  render();
+  try {
+    const savedView = globalScope
+      ? await api.saveGlobalVerifiedReleaseSchedule(config)
+      : await api.saveVerifiedReleaseSchedule(accountId, config);
+    const saved = savedView?.schedule ?? savedView;
+    if (state.verifiedSchedule.scope !== (globalScope ? 'GLOBAL' : 'ACCOUNT')
+      || (!globalScope && (state.selectedAccountId !== accountId || state.verifiedSchedule.accountId !== accountId))) return;
+    state.verifiedSchedule.schedule = saved;
+    state.verifiedSchedule.source = globalScope ? 'TENANT' : 'ACCOUNT';
+    state.verifiedSchedule.draft = verifiedScheduleDraft(saved);
+    state.verifiedSchedule.dirty = false;
+    state.verifiedSchedule.open = false;
+    showToast(t(globalScope ? 'schedule.globalSavedToast' : 'schedule.savedToast'));
+  } catch (error) {
+    if (state.verifiedSchedule.scope !== (globalScope ? 'GLOBAL' : 'ACCOUNT')
+      || (!globalScope && (state.selectedAccountId !== accountId || state.verifiedSchedule.accountId !== accountId))) return;
+    state.verifiedSchedule.error = { kind: 'save', code: error?.code ?? 'VERIFIED_RELEASE_SCHEDULE_FAILED' };
+  } finally {
+    if (globalScope || state.verifiedSchedule.accountId === accountId) {
+      state.verifiedSchedule.saving = false;
+      render();
+    }
+  }
 }
 
 function latestAnalysisEvent(events = []) {
@@ -346,7 +969,7 @@ function latestAnalysisEvent(events = []) {
 
 function responseFor(accountId, externalCommentId) {
   const key = commentKey(accountId, externalCommentId);
-  return responseVersionDetails(state.workflows.get(key) ?? []);
+  return responseVersionDetails(state.workflows.get(key) ?? [], state.language);
 }
 
 function draftFor(accountId, externalCommentId, textarea) {
@@ -391,6 +1014,7 @@ async function classifyComment(accountId, externalCommentId) {
   try {
     await api.classify(accountId, externalCommentId);
     state.workflows.set(key, await api.getWorkflow(accountId, externalCommentId));
+    void loadCommentSummary();
     showToast(t('toast.analysisComplete'));
   } catch (error) {
     await refreshWorkflowQuietly(accountId, externalCommentId);
@@ -417,13 +1041,14 @@ async function generateResponse(accountId, externalCommentId) {
   state.busy.add(`generate:${key}`);
   render();
   try {
-    await api.generateResponse(accountId, externalCommentId, {
-      language: state.language,
+    const generation = await api.generateResponse(accountId, externalCommentId, {
       analysisEventId: analysisEvent.id,
     });
     state.drafts.delete(key);
     state.workflows.set(key, await api.getWorkflow(accountId, externalCommentId));
-    showToast(t('toast.suggestionComplete'));
+    showToast(generation.failures?.length
+      ? t('toast.suggestionPartial', { count: generation.variants?.length ?? 0, languages: generation.failures.map(({ language }) => language).join(', ') })
+      : t('toast.suggestionComplete'));
   } catch (error) {
     await refreshWorkflowQuietly(accountId, externalCommentId);
     showToast(messageFor(error), { error: true });
@@ -478,18 +1103,59 @@ async function sendResponse(accountId, externalCommentId) {
   render();
   try {
     await saveResponse(accountId, externalCommentId, text);
-    const latest = latestResponseVersion(state.workflows.get(key) ?? []);
+    const latest = latestResponseVersion(state.workflows.get(key) ?? [], state.language);
     if (!latest) throw new Error(t('toast.saveBeforeSend'));
     await api.sendResponse(accountId, externalCommentId, latest.id);
     state.workflows.set(key, await api.getWorkflow(accountId, externalCommentId));
     const publication = findPublication(accountId, externalCommentId);
     if (publication) await loadComments(accountId, publication.externalPublicationId, { force: true });
+    await loadCommentSummary();
     showToast(t('toast.sendRecorded'));
   } catch (error) {
     await refreshWorkflowQuietly(accountId, externalCommentId);
     showToast(messageFor(error), { error: true });
   } finally {
     state.busy.delete(`send:${key}`);
+    render();
+  }
+}
+
+function updateCommentLikeState(accountId, externalCommentId, appLiked) {
+  for (const [key, page] of state.comments) {
+    if (!page.items?.some((comment) => (
+      comment.socialAccountId === accountId && comment.externalCommentId === externalCommentId
+    ))) continue;
+    state.comments.set(key, {
+      ...page,
+      items: page.items.map((comment) => (
+        comment.socialAccountId === accountId && comment.externalCommentId === externalCommentId
+          ? { ...comment, appLiked }
+          : comment
+      )),
+    });
+  }
+}
+
+async function toggleCommentLike(accountId, externalCommentId) {
+  const key = commentKey(accountId, externalCommentId);
+  const comment = findComment(accountId, externalCommentId);
+  if (!comment?.canLike || state.busy.has(`like:${key}`)) return;
+
+  const action = comment.appLiked ? 'UNLIKE' : 'LIKE';
+  state.busy.add(`like:${key}`);
+  render();
+  try {
+    const result = await api.setCommentLike(accountId, externalCommentId, action);
+    updateCommentLikeState(accountId, externalCommentId, result.appLiked);
+    if (state.workflows.has(key)) {
+      state.workflows.set(key, await api.getWorkflow(accountId, externalCommentId));
+    }
+    showToast(t(result.appLiked ? 'toast.commentLiked' : 'toast.commentUnliked'));
+  } catch (error) {
+    await refreshWorkflowQuietly(accountId, externalCommentId);
+    showToast(messageFor(error), { error: true });
+  } finally {
+    state.busy.delete(`like:${key}`);
     render();
   }
 }
@@ -530,58 +1196,570 @@ function updateDraftButtons(textarea) {
   sendButton.disabled = !currentText || !comment?.canReply || attemptRecorded || state.busy.has(`send:${key}`);
 }
 
-async function syncPublication(accountId, publicationId, cursor) {
+async function syncPublication(accountId, publicationId, cursor, { showFeedback = true, refreshSummary = true } = {}) {
   const key = publicationKey(accountId, publicationId);
+  if (showFeedback) state.pageSyncFeedback = null;
   const previous = state.comments.get(key) ?? { items: [] };
-  state.comments.set(key, { ...previous, syncing: true, error: null });
+  state.comments.set(key, { ...previous, syncing: true, syncErrorCode: null, loadErrorCode: null });
   render();
   try {
     const page = await api.syncComments(accountId, publicationId, cursor);
     state.comments.set(key, {
       ...state.comments.get(key),
       syncing: false,
+      syncErrorCode: null,
+      loadErrorCode: null,
       nextSyncCursor: page.nextCursor,
       lastSyncAt: page.synchronizedAt,
     });
     const loaded = await loadComments(accountId, publicationId, { force: true });
+    if (refreshSummary) await loadCommentSummary();
+    if (showFeedback) {
       showToast(t('toast.syncPublication', { count: formatNumber(loaded?.items?.length ?? 0) }));
-  } catch (error) {
-    state.comments.set(key, { ...state.comments.get(key), syncing: false, error: messageFor(error) });
-    showToast(messageFor(error), { error: true });
-  }
-  render();
-}
-
-async function syncSelectedNetwork() {
-  const platform = state.activeNetwork;
-  state.busy.add('network-sync');
-  render();
-  try {
-    const result = await api.syncNetwork(platform);
-    state.lastNetworkSync.set(platform, result.completedAt ?? new Date().toISOString());
-    await refreshPublications({ quiet: true });
-    const publications = activePublications();
-    for (let offset = 0; offset < publications.length; offset += 4) {
-      await Promise.all(publications.slice(offset, offset + 4).map(({ account, item }) =>
-        loadComments(account.id, item.externalPublicationId, { force: true })));
     }
-    const outcomes = result.results ?? [];
-    const success = outcomes.filter((item) => item.status === 'SUCCEEDED').length;
-    const failures = outcomes.length - success;
-    showToast(failures
-      ? t('toast.syncNetworkPartial', { success: formatNumber(success), failures: formatNumber(failures) })
-      : t('toast.syncNetworkComplete', { network: t(networkInfo[platform].nameKey) }));
+    return { success: true, commentsSynced: loaded?.items?.length ?? 0 };
   } catch (error) {
-    showToast(messageFor(error), { error: true });
+    const errorCode = error?.code ?? 'SOCIAL_COMMENT_SYNC_FAILED';
+    const platform = state.accountResults.get(accountId)?.account.platform ?? state.activeNetwork;
+    state.comments.set(key, { ...state.comments.get(key), syncing: false, syncErrorCode: errorCode });
+    const message = socialSyncFailureMessage(platform, errorCode);
+    if (showFeedback) showToast(message, { error: true });
+    return { success: false, errorCode };
   } finally {
-    state.busy.delete('network-sync');
     render();
   }
 }
 
+function visiblePagePublications() {
+  const publications = activePublications().filter(({ account }) => (
+    !state.selectedAccountId || account.id === state.selectedAccountId
+  ));
+  return visiblePublicationModel(publications).visible;
+}
+
+async function syncCurrentPublicationPage() {
+  if (state.searchLoading || state.loadingPublications || state.publicationLoadingAccounts.size > 0) return;
+  const publications = visiblePagePublications();
+  if (!publications.length) {
+    state.pageSyncFeedback = t('toolbar.syncPageEmpty');
+    render();
+    return;
+  }
+  state.busy.add('page-sync');
+  state.pageSyncFeedback = null;
+  state.pageSyncProgress = { completed: 0, total: publications.length, currentName: '' };
+  render();
+  try {
+    const results = await syncPublicationPage(
+      publications,
+      ({ account, item }) => syncPublication(account.id, item.externalPublicationId, undefined, { showFeedback: false, refreshSummary: false }),
+      ({ completed, total, current }) => {
+        state.pageSyncProgress = {
+          completed,
+          total,
+          currentName: current
+            ? `${current.item.title || current.item.externalPublicationId} · ${current.account.displayName || current.account.externalAccountId}`
+            : '',
+        };
+        render();
+      },
+    );
+    const success = results.filter(({ result }) => result?.success).length;
+    const failures = results.length - success;
+    await loadCommentSummary();
+    state.pageSyncFeedback = t('toolbar.syncPageComplete', {
+      success: formatNumber(success),
+      failures: formatNumber(failures),
+    });
+    showToast(state.pageSyncFeedback, { error: failures > 0 && success === 0 });
+  } catch (error) {
+    showToast(messageFor(error), { error: true });
+  } finally {
+    state.busy.delete('page-sync');
+    state.pageSyncProgress = null;
+    render();
+  }
+}
+
+async function openBulkReply(accountId, publicationId) {
+  if (state.busy.has('page-sync') || state.searchLoading || state.loadingPublications || state.publicationLoadingAccounts.size > 0) return;
+  const publication = activePublications().find(({ account, item }) => (
+    account.id === accountId && item.externalPublicationId === publicationId
+  ));
+  if (!publication) return;
+
+  bulkReplyReturnFocus = document.activeElement;
+  const { account, item } = publication;
+  state.bulkReply = {
+    open: true,
+    busy: true,
+    accountId,
+    publicationId,
+    videoTitle: item.title || t('publication.untitled'),
+    accountName: account.displayName || account.externalAccountId,
+    status: 'syncing',
+    rows: [],
+    selectedIds: new Set(),
+    progress: null,
+    syncWarning: false,
+    errorCode: null,
+    toneProfile: null,
+  };
+  render();
+  focusBulkDialog();
+
+  try {
+    const loaded = await loadSemiAutomaticReplyComments(api, accountId, publicationId);
+    state.comments.set(publicationKey(accountId, publicationId), {
+      items: loaded.allComments,
+      loading: false,
+      syncing: false,
+      nextSyncCursor: undefined,
+      lastSyncAt: new Date().toISOString(),
+      syncErrorCode: null,
+      loadErrorCode: null,
+    });
+    const toneProfile = await api.getToneProfile(accountId);
+    void loadCommentSummary();
+    state.bulkReply.toneProfile = copyToneProfile(toneProfile);
+    state.bulkReply.syncWarning = loaded.syncResult.status !== 'SUCCEEDED';
+    state.bulkReply.rows = loaded.comments.map((comment) => ({
+      comment,
+      status: 'pending',
+      language: state.language,
+      toneProfile: copyToneProfile(toneProfile),
+      events: [],
+      failures: [],
+      drafts: new Map(),
+      draft: '',
+      errorCode: null,
+      approved: false,
+    }));
+    state.bulkReply.status = 'ready';
+    state.bulkReply.busy = false;
+  } catch (error) {
+    state.bulkReply.status = 'error';
+    state.bulkReply.errorCode = error?.code ?? 'COMMENT_WORKFLOW_BATCH_FAILED';
+    state.bulkReply.busy = false;
+  }
+  render();
+  focusBulkDialog();
+}
+
+function focusBulkDialog() {
+  const closeButton = $('#bulkReplyDialog .bulk-dialog-close');
+  if (closeButton && !closeButton.disabled) closeButton.focus({ preventScroll: true });
+  else $('#bulkReplyDialog .bulk-reply-dialog')?.focus({ preventScroll: true });
+}
+
+function captureBulkDialogFocus(dialog) {
+  const active = document.activeElement;
+  if (!dialog.contains(active)) return null;
+  return {
+    id: active.id || null,
+    role: active.dataset?.role ?? null,
+    action: active.dataset?.action ?? null,
+    commentId: active.dataset?.commentId
+      ?? active.closest?.('.bulk-reply-row')?.dataset?.commentId
+      ?? null,
+    selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+    selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null,
+  };
+}
+
+function restoreBulkDialogFocus(dialog, focus) {
+  if (!focus || dialog.hidden) return;
+  const commentSelector = focus.commentId
+    ? `[data-comment-id="${CSS.escape(focus.commentId)}"]`
+    : '';
+  const selector = focus.id
+    ? `#${CSS.escape(focus.id)}`
+    : focus.action
+      ? `[data-action="${CSS.escape(focus.action)}"]${commentSelector}`
+      : focus.role
+        ? `[data-role="${CSS.escape(focus.role)}"]${commentSelector}`
+        : '';
+  let target = selector ? dialog.querySelector(selector) : null;
+  if (target?.disabled) target = null;
+  target ??= focus.commentId
+    ? dialog.querySelector(`.bulk-reply-row[data-comment-id="${CSS.escape(focus.commentId)}"]`)
+    : null;
+  target ??= dialog.querySelector('.bulk-reply-dialog');
+  target?.focus({ preventScroll: true });
+  if (target && focus.selectionStart !== null && focus.selectionEnd !== null) {
+    try {
+      target.setSelectionRange(focus.selectionStart, focus.selectionEnd);
+    } catch {
+      // Some form controls do not support text selection.
+    }
+  }
+}
+
+function closeBulkReply() {
+  const bulk = state.bulkReply;
+  if (!bulk?.open || bulk.busy) return;
+  if (hasUnsavedBulkEdits(bulk) && !window.confirm(t('bulkReplies.confirmCloseDirty'))) return;
+  bulk.open = false;
+  render();
+  const selector = `button[data-action="bulk-reply"][data-account-id="${CSS.escape(bulk.accountId)}"][data-publication-id="${CSS.escape(bulk.publicationId)}"]`;
+  const trigger = document.querySelector(selector);
+  if (trigger) trigger.focus({ preventScroll: true });
+  else bulkReplyReturnFocus?.focus({ preventScroll: true });
+  bulkReplyReturnFocus = null;
+}
+
+function hasUnsavedBulkEdits(bulk) {
+  return bulk.rows.some(hasUnsavedBulkRowEdits);
+}
+
+function hasUnsavedBulkRowEdits(row) {
+  const languages = new Set([...(row.drafts?.keys() ?? []), row.language]);
+  return [...languages].some((language) => {
+    const response = responseVersionDetails(row.events ?? [], language);
+    if (!response) return false;
+    const draft = row.drafts?.has(language)
+      ? row.drafts.get(language)
+      : language === row.language
+        ? row.draft
+        : response.version.payload.text;
+    return String(draft ?? '').trim() !== (response.version.payload.text ?? '').trim();
+  });
+}
+
+async function generateBulkReplies() {
+  const bulk = state.bulkReply;
+  if (!bulk || bulk.status !== 'ready' || !bulk.rows.length || bulk.busy) return;
+  bulk.status = 'processing';
+  bulk.busy = true;
+  bulk.progress = null;
+  render();
+
+  try {
+    const generatedRows = await generateSemiAutomaticReplies(api, {
+      accountId: bulk.accountId,
+      comments: bulk.rows.map((row) => row.comment),
+      toneProfile: bulk.toneProfile,
+      toneProfileForComment: (comment) => findBulkRow(bulk, comment.externalCommentId)?.toneProfile ?? bulk.toneProfile,
+      languageForComment: (comment) => findBulkRow(bulk, comment.externalCommentId)?.language ?? state.language,
+      onProgress: (update) => {
+        const current = findBulkRow(bulk, update.commentId);
+        if (!current) return;
+        Object.assign(current, update.row, {
+          language: current.language,
+          toneProfile: current.toneProfile,
+          drafts: current.drafts,
+          approved: current.approved,
+        });
+        current.drafts ??= new Map();
+        const key = commentKey(bulk.accountId, update.commentId);
+        state.workflows.set(key, update.row.events ?? []);
+        bulk.progress = {
+          current: update.index,
+          total: update.total,
+          commentName: current.comment.authorDisplayName || current.comment.externalCommentId,
+        };
+        render();
+      },
+    });
+
+    bulk.rows = generatedRows.map((row) => {
+      const current = findBulkRow(bulk, row.comment.externalCommentId);
+      const merged = {
+        ...current,
+        ...row,
+        language: current?.language ?? row.language,
+        toneProfile: current?.toneProfile ?? row.toneProfile,
+        drafts: current?.drafts ?? new Map(),
+        approved: false,
+      };
+      const response = responseVersionDetails(merged.events, merged.language);
+      if (!response) {
+        merged.language = ['pt-BR', 'en-US', 'es-ES'].find((language) => responseVersionDetails(merged.events, language)) ?? merged.language;
+      }
+      const latest = responseVersionDetails(merged.events, merged.language);
+      merged.draft = merged.drafts.get(merged.language) ?? latest?.version.payload.text ?? '';
+      return merged;
+    });
+    bulk.status = 'review';
+    void loadCommentSummary();
+  } catch (error) {
+    showToast(messageFor(error), { error: true });
+    bulk.status = 'review';
+  } finally {
+    bulk.busy = false;
+    bulk.progress = null;
+    render();
+  }
+}
+
+function findBulkRow(bulk, externalCommentId) {
+  return bulk?.rows.find((row) => row.comment.externalCommentId === externalCommentId) ?? null;
+}
+
+function copyToneProfile(profile) {
+  return {
+    primaryTone: profile?.primaryTone ?? toneDefaults.primaryTone,
+    modifiers: [...(profile?.modifiers ?? toneDefaults.modifiers)],
+    customNote: profile?.customNote ?? null,
+  };
+}
+
+function canApproveBulkRow(row) {
+  return ['ready', 'partial', 'approved'].includes(row.status)
+    && Boolean(responseVersionDetails(row.events ?? [], row.language));
+}
+
+function updateBulkSelection(commentId, selected) {
+  const bulk = state.bulkReply;
+  const row = findBulkRow(bulk, commentId);
+  if (!bulk || !row || !canApproveBulkRow(row) || row.approved) return;
+  if (selected) bulk.selectedIds.add(commentId);
+  else bulk.selectedIds.delete(commentId);
+  render();
+  focusBulkControl('bulk-selection', commentId);
+}
+
+function updateAllBulkSelection(selected) {
+  const bulk = state.bulkReply;
+  if (!bulk || bulk.busy) return;
+  for (const row of bulk.rows) {
+    if (!canApproveBulkRow(row) || row.approved) continue;
+    if (selected) bulk.selectedIds.add(row.comment.externalCommentId);
+    else bulk.selectedIds.delete(row.comment.externalCommentId);
+  }
+  render();
+  focusBulkControl('bulk-select-all');
+}
+
+function updateBulkLanguage(commentId, language) {
+  const row = findBulkRow(state.bulkReply, commentId);
+  if (!row || row.approved) return;
+  row.language = language;
+  row.draft = row.drafts?.get(language) ?? responseVersionDetails(row.events ?? [], language)?.version.payload.text ?? '';
+  render();
+  focusBulkControl('bulk-response-language', commentId);
+}
+
+function updateBulkTone(commentId, primaryTone) {
+  const row = findBulkRow(state.bulkReply, commentId);
+  if (!row || row.approved) return;
+  row.toneProfile = { ...copyToneProfile(row.toneProfile), primaryTone };
+  render();
+  focusBulkControl('bulk-response-tone', commentId);
+}
+
+function focusBulkControl(role, commentId) {
+  const commentSelector = commentId ? `[data-comment-id="${CSS.escape(commentId)}"]` : '';
+  document.querySelector(`#bulkReplyDialog [data-role="${role}"]${commentSelector}`)?.focus({ preventScroll: true });
+}
+
+async function regenerateBulkRow(commentId) {
+  const bulk = state.bulkReply;
+  const row = findBulkRow(bulk, commentId);
+  if (!bulk || !row || bulk.busy || !row.toneProfile) return;
+  const previous = responseVersionDetails(row.events ?? [], row.language);
+  if (hasUnsavedBulkRowEdits(row)
+    && !window.confirm(t('bulkReplies.confirmRegenerate'))) return;
+  const analysisEvent = latestAnalysisEvent(row.events ?? []);
+  if (!analysisEvent) {
+    showToast(t('error.analysisRequired'), { error: true });
+    return;
+  }
+
+  bulk.busy = true;
+  row.status = 'generating';
+  render();
+  try {
+    const generated = await api.generateResponse(bulk.accountId, commentId, {
+      analysisEventId: analysisEvent.id,
+      toneOverride: row.toneProfile.primaryTone,
+    });
+    try {
+      row.events = await api.getWorkflow(bulk.accountId, commentId);
+      row.historyWarning = false;
+    } catch {
+      row.events = mergeBulkEvents(row.events, generated.variants ?? []);
+      row.historyWarning = true;
+    }
+    row.failures = generated.failures ?? [];
+    row.errorCode = row.failures[0]?.errorCode ?? null;
+    row.status = generated.variants?.length ? (row.failures.length ? 'partial' : 'ready') : 'failed';
+    row.drafts?.clear();
+    row.approved = false;
+    if (!responseVersionDetails(row.events, row.language)) {
+      row.language = ['pt-BR', 'en-US', 'es-ES'].find((language) => responseVersionDetails(row.events, language)) ?? row.language;
+    }
+    row.draft = responseVersionDetails(row.events, row.language)?.version.payload.text ?? '';
+    state.workflows.set(commentKey(bulk.accountId, commentId), row.events);
+  } catch (error) {
+    row.status = previous ? 'ready' : 'failed';
+    row.errorCode = error?.code ?? 'COMMENT_WORKFLOW_FAILED';
+    await refreshWorkflowQuietly(bulk.accountId, commentId);
+    row.events = state.workflows.get(commentKey(bulk.accountId, commentId)) ?? row.events;
+  } finally {
+    bulk.busy = false;
+    render();
+  }
+}
+
+function mergeBulkEvents(events = [], additions = []) {
+  const knownIds = new Set(events.map((event) => event.id));
+  return [...events, ...additions.filter((event) => event?.id && !knownIds.has(event.id))];
+}
+
+async function approveBulkReplies(commentIds) {
+  const bulk = state.bulkReply;
+  if (!bulk || bulk.status !== 'review' || bulk.busy) return;
+  if (!commentIds.length) return;
+
+  bulk.busy = true;
+  render();
+  let result = { approved: 0, failed: 0 };
+  let failedUnexpectedly = false;
+  try {
+    result = await approveSemiAutomaticReplies(api, {
+      accountId: bulk.accountId,
+      rows: bulk.rows,
+      commentIds,
+      onProgress: ({ phase, row }) => {
+        if (phase === 'saving') {
+          render();
+          return;
+        }
+        const key = commentKey(bulk.accountId, row.comment.externalCommentId);
+        state.workflows.set(key, row.events ?? []);
+        if (row.approved) bulk.selectedIds.delete(row.comment.externalCommentId);
+        render();
+      },
+    });
+  } catch (error) {
+    failedUnexpectedly = true;
+    showToast(messageFor(error), { error: true });
+  } finally {
+    bulk.busy = false;
+    render();
+  }
+  if (failedUnexpectedly) return;
+  showToast(result.failed
+    ? t('bulkReplies.approvalPartial', { approved: formatNumber(result.approved), failed: formatNumber(result.failed) })
+    : t('bulkReplies.approvalComplete', { count: formatNumber(result.approved) }), { error: result.failed > 0 && result.approved === 0 });
+}
+
+async function sendAllApprovedBulkReplies() {
+  const bulk = state.bulkReply;
+  if (!bulk || bulk.status !== 'review' || bulk.busy) return;
+  const sendableRows = eligibleSemiAutomaticReplyRows(bulk.rows);
+  if (!sendableRows.length) return;
+  if (!window.confirm(t('bulkReplies.confirmSendAll', { count: formatNumber(sendableRows.length) }))) return;
+
+  bulk.status = 'sending';
+  bulk.busy = true;
+  bulk.progress = null;
+  render();
+
+  let result;
+  let failedUnexpectedly = false;
+  try {
+    result = await sendApprovedSemiAutomaticReplies(api, {
+      accountId: bulk.accountId,
+      rows: bulk.rows,
+      onProgress: ({ index, total, row }) => {
+        const key = commentKey(bulk.accountId, row.comment.externalCommentId);
+        state.workflows.set(key, row.events ?? []);
+        bulk.progress = {
+          current: index,
+          total,
+          commentName: row.comment.authorDisplayName || row.comment.externalCommentId,
+        };
+        render();
+      },
+    });
+  } catch (error) {
+    failedUnexpectedly = true;
+    showToast(messageFor(error), { error: true });
+  } finally {
+    bulk.status = 'review';
+    bulk.busy = false;
+    bulk.progress = null;
+    render();
+  }
+
+  if (failedUnexpectedly) return;
+  if (result.sent > 0) await loadCommentSummary();
+  if (result.stoppedByRateLimit) {
+    showToast(t('bulkReplies.sendPaused', {
+      sent: formatNumber(result.sent),
+      failed: formatNumber(result.failed),
+      remaining: formatNumber(result.remaining),
+    }), { error: true });
+  } else if (result.failed) {
+    showToast(t('bulkReplies.sendPartial', {
+      sent: formatNumber(result.sent),
+      failed: formatNumber(result.failed),
+    }), { error: result.sent === 0 });
+  } else {
+    showToast(t('bulkReplies.sendComplete', { count: formatNumber(result.sent) }));
+  }
+}
+
+async function handleBulkReplyAction(event) {
+  const button = event.target.closest('button[data-action]');
+  if (!button) return;
+  const { action, commentId } = button.dataset;
+  if (action === 'close-bulk-reply') {
+    closeBulkReply();
+  } else if (action === 'generate-bulk-replies') {
+    await generateBulkReplies();
+  } else if (action === 'approve-bulk-row') {
+    await approveBulkReplies([commentId]);
+  } else if (action === 'approve-selected') {
+    await approveBulkReplies([...state.bulkReply.selectedIds]);
+  } else if (action === 'approve-all') {
+    await approveBulkReplies(state.bulkReply.rows.filter((row) => !row.approved && canApproveBulkRow(row)).map((row) => row.comment.externalCommentId));
+  } else if (action === 'send-all-approved') {
+    await sendAllApprovedBulkReplies();
+  } else if (action === 'regenerate-bulk-row') {
+    await regenerateBulkRow(commentId);
+  }
+}
+
+function clearPublicationPageData() {
+  state.accountResults.clear();
+  state.publications.clear();
+  state.publicationCursors.clear();
+  state.publicationCursorHistory.clear();
+  state.publicationPageIndexes.clear();
+  state.comments.clear();
+  state.workflows.clear();
+  state.workflowErrors.clear();
+  state.workflowLoading.clear();
+  state.expandedPublications.clear();
+  state.expandedComments.clear();
+}
+
+async function changePublicationPageSize(value) {
+  if (!isPublicationPageSize(value)) {
+    $('#publicationPageSize').value = String(state.publicationPageSize);
+    return;
+  }
+  const pageSize = Number(value);
+  if (pageSize === state.publicationPageSize) return;
+  if (state.busy.has('page-sync') || state.searchLoading || state.loadingPublications || state.publicationLoadingAccounts.size > 0) {
+    $('#publicationPageSize').value = String(state.publicationPageSize);
+    return;
+  }
+  state.publicationPageSize = pageSize;
+  state.pageSyncFeedback = null;
+  state.publicationsError = null;
+  clearPublicationPageData();
+  render();
+  await refreshPublications();
+}
+
 async function saveToneProfile() {
+  const globalScope = state.toneScope === 'global';
   const accountId = state.selectedAccountId;
-  if (!accountId) return;
+  if (!globalScope && !accountId) return;
   const modifiers = [...document.querySelectorAll('[data-tone-modifier]:checked')].map((input) => input.dataset.toneModifier);
   if (modifiers.length > 2) {
     showToast(t('toast.modifierLimit'), { error: true });
@@ -595,8 +1773,14 @@ async function saveToneProfile() {
   state.busy.add('tone-save');
   syncToneControls(t('tone.saving'));
   try {
-    state.toneProfile = await api.saveToneProfile(accountId, profile);
-    syncToneControls(t('tone.saved'));
+    const savedView = globalScope
+      ? await api.saveGlobalToneProfile(profile)
+      : await api.saveToneProfile(accountId, profile);
+    state.toneProfile = savedView?.profile ?? savedView;
+    state.toneSource = globalScope ? 'TENANT' : 'ACCOUNT';
+    $('#toneSettings').hidden = true;
+    $('#toneSettingsToggle').setAttribute('aria-expanded', 'false');
+    syncToneControls(t(globalScope ? 'tone.savedGlobal' : 'tone.saved'));
     showToast(t('tone.savedToast'));
   } catch (error) {
     syncToneControls(t('tone.saveFailed', { message: messageFor(error) }));
@@ -607,10 +1791,117 @@ async function saveToneProfile() {
   }
 }
 
+async function connectSocialNetwork(platform, enableReplies = false) {
+  state.connectingNetworks.add(platform);
+  state.connectionsError = null;
+  render();
+  try {
+    const result = await openOAuthPopup(platform, { enableReplies });
+    if (result.type === 'facebook-pages') {
+      state.facebookSelection = result;
+      state.selectedFacebookPageId = result.pages[0]?.pageId ?? null;
+      showToast(t('settings.facebookPagesReady'));
+      return;
+    }
+    await loadConnectedAccounts();
+    showToast(t('settings.oauthConnected'));
+  } catch (error) {
+    showToast(messageFor(error), { error: true });
+  } finally {
+    state.connectingNetworks.delete(platform);
+    render();
+  }
+}
+
+function removeDisconnectedAccountState(accountId) {
+  const prefix = `${accountId}\u0000`;
+  state.accountResults.delete(accountId);
+  state.publications.delete(accountId);
+  state.publicationCursors.delete(accountId);
+  for (const cache of [state.comments, state.workflows, state.workflowErrors, state.drafts]) {
+    for (const key of cache.keys()) {
+      if (key.startsWith(prefix)) cache.delete(key);
+    }
+  }
+  for (const cache of [state.expandedPublications, state.expandedComments, state.workflowLoading]) {
+    for (const key of cache) {
+      if (key.startsWith(prefix)) cache.delete(key);
+    }
+  }
+  if (state.selectedAccountId === accountId) {
+    state.selectedAccountId = null;
+    state.toneAccountId = null;
+    if (state.toneScope === 'account') {
+      state.toneProfile = { ...toneDefaults };
+      state.toneSource = null;
+    }
+    if (state.verifiedSchedule.scope !== 'GLOBAL') {
+      state.verifiedSchedule = {
+        scope: 'ACCOUNT',
+        accountId: null,
+        schedule: null,
+        source: null,
+        draft: emptyVerifiedScheduleDraft(),
+        open: state.verifiedSchedule.open,
+        loading: false,
+        saving: false,
+        dirty: false,
+        error: null,
+      };
+    }
+    syncToneControls();
+  }
+}
+
+async function disconnectSocialAccount(accountId) {
+  const account = state.connectedAccounts.find((item) => item.id === accountId);
+  if (!account || state.disconnectingAccounts.has(accountId)) return;
+  const name = account.displayName || account.externalAccountId;
+  if (!window.confirm(t('settings.disconnectConfirm', { name }))) return;
+
+  state.disconnectingAccounts.add(accountId);
+  render();
+  try {
+    await api.disconnectAccount(accountId);
+    state.connectedAccounts = state.connectedAccounts.filter((item) => item.id !== accountId);
+    removeDisconnectedAccountState(accountId);
+    showToast(t('settings.disconnectSuccess'));
+  } catch (error) {
+    showToast(messageFor(error), { error: true });
+  } finally {
+    state.disconnectingAccounts.delete(accountId);
+    render();
+  }
+}
+
+async function selectFacebookPage() {
+  const selection = state.facebookSelection;
+  const pageId = state.selectedFacebookPageId;
+  if (!selection || !pageId) return;
+  state.connectingNetworks.add('facebook-select');
+  render();
+  try {
+    await api.selectFacebookPage(selection.selectionId, pageId);
+    state.facebookSelection = null;
+    state.selectedFacebookPageId = null;
+    await loadConnectedAccounts();
+    showToast(t('settings.oauthConnected'));
+  } catch (error) {
+    showToast(messageFor(error), { error: true });
+  } finally {
+    state.connectingNetworks.delete('facebook-select');
+    render();
+  }
+}
+
 async function handleContentAction(event) {
   const button = event.target.closest('button[data-action]');
   if (!button) return;
   const { action, accountId, publicationId, commentId } = button.dataset;
+  if (action === 'bulk-reply') {
+    await openBulkReply(accountId, publicationId);
+    return;
+  }
   if (action === 'toggle-publication') {
     const key = publicationKey(accountId, publicationId);
     if (state.expandedPublications.has(key)) {
@@ -640,8 +1931,8 @@ async function handleContentAction(event) {
     if (cursor) await syncPublication(accountId, publicationId, cursor);
     return;
   }
-  if (action === 'load-more-publications') {
-    await refreshPublications({ accountId, append: true });
+  if (action === 'publication-page') {
+    await changePublicationPage(accountId, button.dataset.direction);
     return;
   }
   if (action === 'refresh-publications') {
@@ -660,6 +1951,10 @@ async function handleContentAction(event) {
   }
   if (action === 'classify') {
     await classifyComment(accountId, commentId);
+    return;
+  }
+  if (action === 'toggle-comment-like') {
+    await toggleCommentLike(accountId, commentId);
     return;
   }
   if (action === 'generate') {
@@ -683,39 +1978,196 @@ async function handleContentAction(event) {
   if (action === 'send-response') await sendResponse(accountId, commentId);
 }
 
+async function handleProfileAction(event) {
+  const button = event.target.closest('button[data-action]');
+  if (!button) return;
+  const { action, platform, enableReplies } = button.dataset;
+  if (action === 'back-to-comments') {
+    await setScreen('comments');
+  } else if (action === 'refresh-connected-accounts') {
+    await loadConnectedAccounts();
+  } else if (action === 'reload-ai-settings') {
+    await loadAIProviderSettings();
+  } else if (action === 'connect-social-network') {
+    await connectSocialNetwork(platform, enableReplies === 'true');
+  } else if (action === 'disconnect-social-account') {
+    await disconnectSocialAccount(button.dataset.accountId);
+  } else if (action === 'select-facebook-page') {
+    await selectFacebookPage();
+  } else if (action === 'cancel-facebook-selection') {
+    state.facebookSelection = null;
+    state.selectedFacebookPageId = null;
+    render();
+  }
+}
+
+function handleBulkDialogKeydown(event) {
+  if (!state.bulkReply?.open) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeBulkReply();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const dialog = $('#bulkReplyDialog .bulk-reply-dialog');
+  if (!dialog) return;
+  const focusable = [...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.hidden && element.offsetParent !== null);
+  if (!focusable.length) {
+    event.preventDefault();
+    dialog.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function attachEvents() {
+  $('.topbar').addEventListener('click', (event) => {
+    if (!event.target.closest?.('[data-action="toggle-global-font-settings"]')) return;
+    state.fontSettingsOpen = !state.fontSettingsOpen;
+    syncGlobalFontSettingsControl();
+    if (state.fontSettingsOpen) $('#uiFontSizeSelect')?.focus({ preventScroll: true });
+  });
+  $('.topbar').addEventListener('change', (event) => {
+    const select = event.target.closest?.('[data-ui-font-size-option]');
+    if (!select || !isSupportedUiFontSize(select.value)) return;
+    state.uiFontSize = select.value;
+    applyUiFontSizePreference(document.documentElement, state.uiFontSize);
+    writeUiFontSizePreference(state.uiFontSize);
+  });
+  document.addEventListener('click', (event) => {
+    if (!state.fontSettingsOpen || event.target.closest?.('.global-font-settings')) return;
+    state.fontSettingsOpen = false;
+    syncGlobalFontSettingsControl();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !state.fontSettingsOpen) return;
+    event.preventDefault();
+    state.fontSettingsOpen = false;
+    syncGlobalFontSettingsControl();
+    $('#globalFontSettingsToggle')?.focus({ preventScroll: true });
+  });
+  document.querySelectorAll('[data-view]').forEach((link) => link.addEventListener('click', (event) => {
+    event.preventDefault();
+    void setScreen(link.dataset.view);
+  }));
+  window.addEventListener('hashchange', () => {
+    const screen = window.location.hash === '#connections' ? 'connections' : 'comments';
+    if (screen !== state.screen) void setScreen(screen);
+  });
+  $('#connectionsScreen').addEventListener('click', (event) => { void handleProfileAction(event); });
+  $('#aiProviderSettings').addEventListener('submit', (event) => {
+    if (event.target.matches('#responseGenerationSettingsForm')) void saveAIProviderModel(event);
+    else if (event.target.matches('#aiProviderAccessForm')) void saveAIProviderAccess(event);
+  });
+  $('#connectedAccounts').addEventListener('change', (event) => {
+    if (event.target.matches('#facebookPageSelect')) state.selectedFacebookPageId = event.target.value;
+  });
+  $('#appearanceSettings').addEventListener('change', (event) => {
+    const locale = event.target.closest('[data-locale-option]')?.value;
+    if (locale && setUiLocale(locale)) {
+      writeUiLocale(locale);
+      document.documentElement.lang = locale;
+      applyStaticTranslations();
+      render();
+      return;
+    }
+    const theme = event.target.closest('[data-theme-option]')?.dataset.themeOption;
+    if (theme !== 'light' && theme !== 'dark') return;
+    state.theme = theme;
+    applyThemePreference(document.documentElement, theme);
+    writeThemePreference(theme);
+    render();
+  });
   $('#socialTabs').addEventListener('click', async (event) => {
     const tab = event.target.closest('[data-network]');
-    if (!tab || tab.dataset.network === state.activeNetwork) return;
+    if (!tab || state.busy.has('page-sync') || state.searchLoading || state.loadingPublications
+      || state.publicationLoadingAccounts.size > 0 || tab.dataset.network === state.activeNetwork) return;
     state.activeNetwork = tab.dataset.network;
-    ensureSelectedAccount();
-    render();
-    await loadToneProfile(state.selectedAccountId);
+    state.selectedAccountId = null;
+    void loadVerifiedReleaseSchedule(null);
+    state.pageSyncFeedback = null;
+    state.publicationsError = null;
+    clearPublicationPageData();
+    if (await refreshPublications()) void syncCurrentPublicationPage();
+    await Promise.all([
+      loadToneProfile(state.selectedAccountId),
+      loadVerifiedReleaseSchedule(state.selectedAccountId),
+    ]);
     if (state.search.trim() || state.statusFilter !== 'all') await loadCommentsForSearchScope();
   });
   $('#accountFilter').addEventListener('change', async (event) => {
+    if (state.busy.has('page-sync') || state.searchLoading || state.loadingPublications || state.publicationLoadingAccounts.size > 0) return;
     state.selectedAccountId = event.target.value || null;
+    state.pageSyncFeedback = null;
+    const toneLoad = loadToneProfile(state.selectedAccountId);
+    const scheduleLoad = loadVerifiedReleaseSchedule(state.selectedAccountId);
     render();
-    await loadToneProfile(state.selectedAccountId);
+    await Promise.all([toneLoad, scheduleLoad]);
     if (state.search.trim() || state.statusFilter !== 'all') await loadCommentsForSearchScope();
   });
   $('#searchInput').addEventListener('input', (event) => {
+    if (state.busy.has('page-sync') || state.searchLoading || state.loadingPublications || state.publicationLoadingAccounts.size > 0) return;
     state.search = event.target.value;
+    state.pageSyncFeedback = null;
     render();
     window.clearTimeout(searchTimer);
     if (state.search.trim()) searchTimer = window.setTimeout(() => { void loadCommentsForSearchScope(); }, 300);
   });
   $('#statusFilter').addEventListener('change', (event) => {
+    if (state.busy.has('page-sync') || state.searchLoading || state.loadingPublications || state.publicationLoadingAccounts.size > 0) return;
     state.statusFilter = event.target.value;
+    state.pageSyncFeedback = null;
     render();
     if (state.statusFilter !== 'all') void loadCommentsForSearchScope();
   });
-  $('#syncNetwork').addEventListener('click', syncSelectedNetwork);
+  $('#publicationPageSize').addEventListener('change', (event) => {
+    void changePublicationPageSize(event.target.value);
+  });
+  $('#syncPageButton').addEventListener('click', syncCurrentPublicationPage);
   $('#toneSettingsToggle').addEventListener('click', () => {
     const panel = $('#toneSettings');
     panel.hidden = !panel.hidden;
     $('#toneSettingsToggle').setAttribute('aria-expanded', String(!panel.hidden));
   });
+  $('#verifiedReleaseScheduleToggle').addEventListener('click', () => {
+    state.verifiedSchedule.open = !state.verifiedSchedule.open;
+    render();
+    if (state.verifiedSchedule.open
+      && ((state.verifiedSchedule.scope !== 'GLOBAL' && state.verifiedSchedule.accountId !== state.selectedAccountId)
+        || state.verifiedSchedule.error?.kind === 'load')) {
+      void loadVerifiedReleaseSchedule(state.selectedAccountId, { force: true });
+    }
+  });
+  $('#verifiedReleaseSchedulePanel').addEventListener('submit', (event) => {
+    if (event.target.matches('#verifiedReleaseScheduleForm')) void saveVerifiedReleaseSchedule(event);
+  });
+  $('#verifiedReleaseSchedulePanel').addEventListener('click', (event) => {
+    if (event.target.closest('[data-action="retry-verified-schedule"]')) {
+      void loadVerifiedReleaseSchedule(state.selectedAccountId, { force: true });
+    }
+    const scopeButton = event.target.closest('[data-action="verified-schedule-scope"]');
+    if (scopeButton) setVerifiedScheduleScope(scopeButton.dataset.scope);
+  });
+  $('#toneSettings').addEventListener('click', (event) => {
+    const scopeButton = event.target.closest('[data-tone-scope]');
+    if (scopeButton) setToneScope(scopeButton.dataset.toneScope);
+  });
+  for (const eventName of ['input', 'change']) {
+    $('#verifiedReleaseSchedulePanel').addEventListener(eventName, (event) => {
+      if (event.target.matches('[data-role="verified-schedule-enabled"], [data-day-of-week], #verifiedScheduleLocalTime, #verifiedScheduleTimeZone')) {
+        updateVerifiedScheduleDraftFromPanel($('#verifiedReleaseSchedulePanel'));
+      }
+    });
+  }
   $('#saveToneProfile').addEventListener('click', saveToneProfile);
   $('#toneNote').addEventListener('input', (event) => {
     $('#toneNoteCount').textContent = `${event.target.value.length}/500`;
@@ -736,16 +2188,68 @@ function attachEvents() {
     if (event.target.matches('[data-role="response-draft"]')) updateDraftButtons(event.target);
   });
   $('#contentList').addEventListener('change', (event) => {
-    if (event.target.matches('[data-role="response-language"]')) state.language = event.target.value;
+    if (event.target.matches('[data-role="response-language"]')) {
+      const nextLanguage = event.target.value;
+      if (nextLanguage === state.language) return;
+      if (state.drafts.size > 0 && !window.confirm(t('toast.discardDraftForLanguage'))) {
+        event.target.value = state.language;
+        return;
+      }
+      state.drafts.clear();
+      state.language = nextLanguage;
+      render();
+    }
   });
+  $('#bulkReplyDialog').addEventListener('click', (event) => {
+    if (event.target.matches('[data-bulk-backdrop]')) {
+      closeBulkReply();
+      return;
+    }
+    void handleBulkReplyAction(event);
+  });
+  $('#bulkReplyDialog').addEventListener('change', (event) => {
+    const target = event.target;
+    const { commentId } = target.dataset;
+    if (target.matches('[data-role="bulk-selection"]')) {
+      updateBulkSelection(commentId, target.checked);
+    } else if (target.matches('[data-role="bulk-select-all"]')) {
+      updateAllBulkSelection(target.checked);
+    } else if (target.matches('[data-role="bulk-response-language"]')) {
+      updateBulkLanguage(commentId, target.value);
+    } else if (target.matches('[data-role="bulk-response-tone"]')) {
+      updateBulkTone(commentId, target.value);
+    }
+  });
+  $('#bulkReplyDialog').addEventListener('input', (event) => {
+    const target = event.target;
+    if (!target.matches('[data-role="bulk-response-draft"]')) return;
+    const row = findBulkRow(state.bulkReply, target.dataset.commentId);
+    if (!row) return;
+    row.drafts ??= new Map();
+    row.drafts.set(row.language, target.value);
+    row.draft = target.value;
+    const approveButton = target.closest('.bulk-response-pane')?.querySelector('[data-action="approve-bulk-row"]');
+    if (approveButton) approveButton.disabled = !target.value.trim() || state.bulkReply.busy || row.approved || !canApproveBulkRow(row);
+  });
+  $('#bulkReplyDialog').addEventListener('keydown', handleBulkDialogKeydown);
 }
 
 async function start() {
   document.documentElement.lang = uiLocale;
   applyStaticTranslations();
   attachEvents();
-  await refreshPublications();
-  await loadToneProfile(state.selectedAccountId);
+  render();
+  const summaryLoad = loadCommentSummary();
+  if (state.screen === 'connections') {
+    await Promise.all([summaryLoad, loadConnectedAccounts(), loadAIProviderSettings()]);
+  } else {
+    if (await refreshPublications()) void syncCurrentPublicationPage();
+    await Promise.all([
+      summaryLoad,
+      loadToneProfile(state.selectedAccountId),
+      loadVerifiedReleaseSchedule(state.selectedAccountId),
+    ]);
+  }
 }
 
 void start();

@@ -51,7 +51,7 @@ The initial catalog locales are `pt-BR`, `en-US`, and `es-ES`. Adding a locale r
 
 ## Translation and formatting strategy
 
-- Store semantic-key catalogs as JSON versioned with the application, separated by locale and namespace (`common`, `validation`, `errors`).
+- Store semantic-key catalogs versioned with the application, separated by locale and namespace (`common`, `validation`, `errors`). The static browser frontend may ship equivalent catalogs as ES modules.
 - Translate a missing key using the configured system catalog; if still missing, return the semantic key so missing catalog entries remain detectable without exposing arbitrary English text.
 - For unsupported runtime locales, formatting and translation use the resolved system locale; no request-level locale conditionals.
 - Interpolation uses named parameters. Plural messages use catalog plural categories selected with `Intl.PluralRules`, including an `other` form; business rules do not live in catalog entries.
@@ -67,7 +67,7 @@ The original localization foundation did not introduce tenant/user tables. IAM-0
 
 ## API and frontend impact
 
-HTTP APIs accept `Accept-Language` for anonymous negotiation, while authenticated persisted preferences take precedence. API timestamps remain ISO 8601 instants; localized display is not returned in place of structured data unless an endpoint is explicitly presentation-oriented. No `?locale=` parameter is required. The prototype-based comments frontend now uses a semantic `t(key)` facade and the `pt-BR` catalog. Authenticated locale-context integration and additional frontend catalogs remain deferred to FND-04; components must continue using semantic keys and formatting helpers rather than locale conditionals.
+HTTP APIs accept `Accept-Language` for anonymous negotiation, while authenticated persisted preferences take precedence. API timestamps remain ISO 8601 instants; localized display is not returned in place of structured data unless an endpoint is explicitly presentation-oriented. No `?locale=` parameter is required. The prototype-based comments frontend uses a semantic `t(key)` facade with `pt-BR`, `en-US`, and `es-ES` catalogs and a browser-local locale selector. Authenticated locale-context integration remains deferred to FND-04; components must continue using semantic keys and formatting helpers rather than locale conditionals.
 
 ## Test impact
 

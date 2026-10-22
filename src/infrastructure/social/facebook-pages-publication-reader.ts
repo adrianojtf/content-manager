@@ -1,5 +1,5 @@
 import type { SocialCredentialVault } from '../../application/ports/social-credential-vault.port';
-import type { PlatformPublication, PlatformPublicationPage, SocialPublicationReader } from '../../application/ports/social-publication-reader.port';
+import { defaultSocialPublicationPageSize, type PlatformPublication, type PlatformPublicationPage, type SocialPublicationPageSize, type SocialPublicationReader } from '../../application/ports/social-publication-reader.port';
 import { SocialProviderError } from '../../application/social/social-provider-error';
 import type { SocialAccount } from '../../domain/social/social-account';
 import { MetaGraphCommunityHttpClient, type MetaCommunityEnvironment } from './meta-graph-community-http';
@@ -25,9 +25,9 @@ export class FacebookPagesPublicationReader implements SocialPublicationReader {
     this.graph = new MetaGraphCommunityHttpClient(credentials, environment, fetcher, instagramCredentials);
   }
 
-  async listPublications(account: SocialAccount, cursor?: string): Promise<PlatformPublicationPage> {
+  async listPublications(account: SocialAccount, cursor?: string, pageSize: SocialPublicationPageSize = defaultSocialPublicationPageSize): Promise<PlatformPublicationPage> {
     if (account.platform !== 'facebook') throw new SocialProviderError('SOCIAL_ACCOUNT_PLATFORM_UNSUPPORTED');
-    const query: Record<string, string> = { fields: 'id,message,permalink_url,full_picture,created_time', limit: '100' };
+    const query: Record<string, string> = { fields: 'id,message,permalink_url,full_picture,created_time', limit: String(pageSize) };
     if (cursor) query.after = cursor;
     const payload = await this.graph.get(account, `/${encodeURIComponent(account.externalAccountId)}/posts`, query, ['pages_read_engagement']) as FacebookPostPage;
     if (!Array.isArray(payload.data)) throw new SocialProviderError('SOCIAL_PROVIDER_RESPONSE_INVALID');

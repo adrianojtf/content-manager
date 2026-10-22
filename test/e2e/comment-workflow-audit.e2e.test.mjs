@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import test from 'node:test';
+import { sendApprovedSemiAutomaticReplies } from '../../web/bulk-replies.mjs';
+import { CreatorDeskApi } from '../../web/api.mjs';
 
 const require = createRequire(import.meta.url);
 const { NestFactory } = require('@nestjs/core');
@@ -105,6 +107,53 @@ test('comment workflow HTTP evaluates and manually sends only the selected saved
   ]);
 });
 
+test('comment workflow HTTP sends the selected generated language variant when other variants are newer', async () => {
+  const tenantId = '30000000-0000-4000-8000-000000000001';
+  const createdAt = '2026-10-14T12:00:00.000Z';
+  const account = SocialAccount.create({ id: accountId, tenantId, platform: 'youtube', externalAccountId: 'UC-test', displayName: 'Test creator', credentialReference: 'test-reference' });
+  const comment = {
+    platform: 'youtube', socialAccountId: accountId, externalCommentId: commentId, externalThreadId: 'thread-1',
+    externalPublicationId: 'video-1', authorDisplayName: 'Viewer', text: 'Qual é o nome da música?',
+    createdAt, canReply: true, lastSyncedAt: createdAt, expiresAt: '2026-11-13T12:00:00.000Z',
+  };
+  const events = [
+    { id: 'suggestion-pt', tenantId, socialAccountId: accountId, externalCommentId: commentId, eventType: 'RESPONSE_SUGGESTION_GENERATED', actorSource: 'GENERATOR', status: 'SUCCEEDED', operationId: null, batchOperationId: null, parentEventId: null, payload: { language: 'pt-BR', text: 'Resposta em português.' }, recordedAt: createdAt, expiresAt: comment.expiresAt },
+    { id: 'suggestion-en', tenantId, socialAccountId: accountId, externalCommentId: commentId, eventType: 'RESPONSE_SUGGESTION_GENERATED', actorSource: 'GENERATOR', status: 'SUCCEEDED', operationId: null, batchOperationId: null, parentEventId: null, payload: { language: 'en-US', text: 'English reply.' }, recordedAt: createdAt, expiresAt: comment.expiresAt },
+    { id: 'suggestion-es', tenantId, socialAccountId: accountId, externalCommentId: commentId, eventType: 'RESPONSE_SUGGESTION_GENERATED', actorSource: 'GENERATOR', status: 'SUCCEEDED', operationId: null, batchOperationId: null, parentEventId: null, payload: { language: 'es-ES', text: 'Respuesta en español.' }, recordedAt: createdAt, expiresAt: comment.expiresAt },
+  ];
+  const eventRepository = {
+    append: async (input) => {
+      const event = { ...input, id: `workflow-${events.length + 1}`, expiresAt: comment.expiresAt };
+      events.push(event);
+      return event;
+    },
+    listByComment: async () => [...events],
+  };
+  const tenant = { resolveTenantId: async () => tenantId };
+  const accounts = { findById: async () => account };
+  const comments = { findByExternalCommentId: async () => comment, markRepliedByApp: async () => {} };
+  const sendTexts = [];
+  const sendReply = new SendManualCommentReply(accounts, comments, {
+    reply: async (_account, _comment, text) => {
+      sendTexts.push(text);
+      return { platform: 'youtube', externalReplyId: 'external-reply-pt' };
+    },
+  }, eventRepository, tenant, { generate: () => '60000000-0000-4000-8000-000000000006' }, () => Date.parse(createdAt));
+  const history = new ListCommentWorkflow(eventRepository, accounts, tenant, () => Date.parse(createdAt));
+
+  await withApp({ corrections: { execute: async () => ({}) }, revisions: { execute: async () => ({}) }, sendReply, history }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/social/accounts/${accountId}/comments/${commentId}/revisions/suggestion-pt/send`, { method: 'POST' });
+
+    assert.equal(response.status, 201);
+    assert.equal((await response.json()).payload.externalReplyId, 'external-reply-pt');
+  });
+
+  assert.deepEqual(sendTexts, ['Resposta em português.']);
+  const attempt = events.find((event) => event.eventType === 'MANUAL_REPLY_ATTEMPTED');
+  assert.equal(attempt.payload.responseVersionEventId, 'suggestion-pt');
+  assert.equal(attempt.payload.text, 'Resposta em português.');
+});
+
 test('comment workflow runs edit, response evaluation, and one manual send through actual use cases', async () => {
   const tenantId = '30000000-0000-4000-8000-000000000001';
   const createdAt = '2026-10-14T12:00:00.000Z';
@@ -121,7 +170,9 @@ test('comment workflow runs edit, response evaluation, and one manual send throu
   };
   const events = [
     { id: 'analysis-1', tenantId, socialAccountId: accountId, externalCommentId: commentId, eventType: 'COMMENT_ANALYSIS_CREATED', actorSource: 'AI', status: 'SUCCEEDED', operationId: null, batchOperationId: null, parentEventId: null, payload: analysis, recordedAt: createdAt, expiresAt: comment.expiresAt },
-    { id: 'suggestion-1', tenantId, socialAccountId: accountId, externalCommentId: commentId, eventType: 'RESPONSE_SUGGESTION_GENERATED', actorSource: 'GENERATOR', status: 'SUCCEEDED', operationId: null, batchOperationId: null, parentEventId: 'analysis-1', payload: { text: 'A música é X.' }, recordedAt: createdAt, expiresAt: comment.expiresAt },
+    { id: 'suggestion-1', tenantId, socialAccountId: accountId, externalCommentId: commentId, eventType: 'RESPONSE_SUGGESTION_GENERATED', actorSource: 'GENERATOR', status: 'SUCCEEDED', operationId: null, batchOperationId: null, parentEventId: 'analysis-1', payload: { language: 'pt-BR', text: 'A música é X.' }, recordedAt: createdAt, expiresAt: comment.expiresAt },
+    { id: 'suggestion-en', tenantId, socialAccountId: accountId, externalCommentId: commentId, eventType: 'RESPONSE_SUGGESTION_GENERATED', actorSource: 'GENERATOR', status: 'SUCCEEDED', operationId: null, batchOperationId: null, parentEventId: 'analysis-1', payload: { language: 'en-US', text: 'The song is X.' }, recordedAt: createdAt, expiresAt: comment.expiresAt },
+    { id: 'suggestion-es', tenantId, socialAccountId: accountId, externalCommentId: commentId, eventType: 'RESPONSE_SUGGESTION_GENERATED', actorSource: 'GENERATOR', status: 'SUCCEEDED', operationId: null, batchOperationId: null, parentEventId: 'analysis-1', payload: { language: 'es-ES', text: 'La canción es X.' }, recordedAt: createdAt, expiresAt: comment.expiresAt },
   ];
   const eventRepository = {
     append: async (input) => {
@@ -148,7 +199,7 @@ test('comment workflow runs edit, response evaluation, and one manual send throu
       evaluatedInputs.push(input);
       return { relevance: 0.96, tone: 0.93, helpfulness: 0.89, factualRisk: 0.02, toxicityRisk: 0, hallucinationRisk: 0.01, publishRecommendation: 'APPROVE', confidence: 0.94, rationale: 'Direct answer.', provider: 'JEV', model: 'deterministic-test', schemaVersion: '1' };
     },
-  }, recordEvaluation, eventRepository, tenant, now);
+  }, recordEvaluation, eventRepository, tenant, { get: async () => null }, { get: async () => null }, now);
   const sentTexts = [];
   const sendReply = new SendManualCommentReply(accounts, comments, {
     reply: async (_account, _comment, text) => {
@@ -159,6 +210,10 @@ test('comment workflow runs edit, response evaluation, and one manual send throu
   const history = new ListCommentWorkflow(eventRepository, accounts, tenant, now);
 
   await withApp({ corrections: { execute: async () => ({}) }, revisions, evaluateResponse, sendReply, history }, async (baseUrl) => {
+    const initialEvaluation = await fetch(`${baseUrl}/social/accounts/${accountId}/comments/${commentId}/revisions/suggestion-1/evaluation`, { method: 'POST' });
+    assert.equal(initialEvaluation.status, 201);
+    assert.equal((await initialEvaluation.json()).parentEventId, 'suggestion-1');
+
     const edit = await fetch(`${baseUrl}/social/accounts/${accountId}/comments/${commentId}/suggestions/suggestion-1/revisions`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'A trilha é X.', reason: 'Resposta revisada.' }),
     });
@@ -202,8 +257,8 @@ test('comment workflow runs edit, response evaluation, and one manual send throu
     assert.equal(timeline.at(-4).id, latestRevision.id);
   });
 
-  assert.equal(evaluatedInputs.length, 2);
-  assert.deepEqual(evaluatedInputs.map(({ responseText }) => responseText), ['A trilha é X.', 'A trilha sonora é X.']);
+  assert.equal(evaluatedInputs.length, 3);
+  assert.deepEqual(evaluatedInputs.map(({ responseText }) => responseText), ['A música é X.', 'A trilha é X.', 'A trilha sonora é X.']);
   assert.deepEqual(sentTexts, ['A trilha sonora é X.']);
 });
 
@@ -271,4 +326,115 @@ test('creator can author, edit, and manually send a response without comment ana
 
   assert.equal(evaluationCalls, 0);
   assert.deepEqual(sentTexts, ['Resposta final.']);
+});
+
+test('semi-automatic send-all uses the existing per-comment route for approved rows only', async () => {
+  const tenantId = '30000000-0000-4000-8000-000000000001';
+  const recordedAt = '2026-10-21T12:00:00.000Z';
+  const expiresAt = '2026-11-20T12:00:00.000Z';
+  const account = SocialAccount.create({
+    id: accountId,
+    tenantId,
+    platform: 'youtube',
+    externalAccountId: 'UC-test',
+    displayName: 'Test creator',
+    credentialReference: 'test-reference',
+  });
+  const commentIds = ['comment-one', 'comment-unapproved', 'comment-two'];
+  const comments = new Map(commentIds.map((externalCommentId) => [externalCommentId, {
+    platform: 'youtube',
+    socialAccountId: accountId,
+    externalCommentId,
+    externalThreadId: `thread-${externalCommentId}`,
+    externalPublicationId: 'video-1',
+    authorDisplayName: 'Viewer',
+    text: 'Obrigado pelo vídeo.',
+    createdAt: recordedAt,
+    canReply: true,
+    appReplied: false,
+    externalReplyStatus: 'NOT_REPLIED',
+    lastSyncedAt: recordedAt,
+    expiresAt,
+  }]));
+  const histories = new Map(commentIds.map((externalCommentId) => {
+    const version = {
+      id: `suggestion-${externalCommentId}`,
+      eventType: 'RESPONSE_SUGGESTION_GENERATED',
+      status: 'SUCCEEDED',
+      actorSource: 'AI',
+      socialAccountId: accountId,
+      externalCommentId,
+      payload: { language: 'pt-BR', text: `Reply for ${externalCommentId}` },
+      recordedAt,
+      expiresAt,
+    };
+    return [externalCommentId, [version]];
+  }));
+  let eventNumber = 0;
+  let attemptNumber = 0;
+  const eventRepository = {
+    append: async (input) => {
+      const event = { ...input, id: `workflow-event-${++eventNumber}`, expiresAt };
+      histories.get(input.externalCommentId).push(event);
+      return event;
+    },
+    listByComment: async (_tenant, _socialAccountId, externalCommentId) => [...(histories.get(externalCommentId) ?? [])],
+  };
+  const tenant = { resolveTenantId: async () => tenantId };
+  const accounts = { findById: async (_tenant, id) => (id === accountId ? account : null) };
+  const commentRepository = {
+    findByExternalCommentId: async (_tenant, _socialAccountId, externalCommentId) => comments.get(externalCommentId) ?? null,
+    markRepliedByApp: async (_tenant, _socialAccountId, externalCommentId) => {
+      comments.get(externalCommentId).appReplied = true;
+    },
+  };
+  const sentTexts = [];
+  const sendReply = new SendManualCommentReply(
+    accounts,
+    commentRepository,
+    {
+      reply: async (_account, _comment, text) => {
+        sentTexts.push(text);
+        return { platform: 'youtube', externalReplyId: `external-reply-${sentTexts.length}` };
+      },
+    },
+    eventRepository,
+    tenant,
+    { generate: () => `attempt-${++attemptNumber}` },
+    () => Date.parse(recordedAt),
+  );
+  const history = new ListCommentWorkflow(eventRepository, accounts, tenant, () => Date.parse(recordedAt));
+  const rows = commentIds.map((externalCommentId) => {
+    const approved = externalCommentId !== 'comment-unapproved';
+    return {
+      comment: comments.get(externalCommentId),
+      status: approved ? 'approved' : 'ready',
+      language: 'pt-BR',
+      events: histories.get(externalCommentId),
+      approved,
+    };
+  });
+
+  await withApp({
+    corrections: { execute: async () => ({}) },
+    revisions: { execute: async () => ({}) },
+    sendReply,
+    history,
+  }, async (baseUrl) => {
+    const api = new CreatorDeskApi({ baseUrl });
+    const result = await sendApprovedSemiAutomaticReplies(api, {
+      accountId,
+      rows,
+    });
+
+    assert.deepEqual(result, { sent: 2, failed: 0, remaining: 0, stoppedByRateLimit: false });
+    assert.equal(rows[0].events.at(-1).eventType, 'MANUAL_REPLY_RESULT');
+    assert.equal(rows[1].status, 'ready');
+    assert.equal(rows[2].events.at(-1).eventType, 'MANUAL_REPLY_RESULT');
+  });
+
+  assert.deepEqual(sentTexts, ['Reply for comment-one', 'Reply for comment-two']);
+  assert.equal(comments.get('comment-one').appReplied, true);
+  assert.equal(comments.get('comment-two').appReplied, true);
+  assert.equal(comments.get('comment-unapproved').appReplied, false);
 });

@@ -28,7 +28,7 @@ function storedComment(externalCommentId, publicationId, socialAccountId = accou
   };
 }
 
-function createBatch({ comments = [], accounts = [account], publicationPage = null, syncResults = [], classifyFailureFor = null, generateFailureFor = null } = {}) {
+function createBatch({ comments = [], accounts = [account], publicationPage = null, syncResults = [], classifyFailureFor = null, generateFailureFor = null, partialGenerateFor = null } = {}) {
   const calls = [];
   const accountsRepository = {
     listByTenant: async (scope) => { calls.push(['listAccounts', scope]); return accounts; },
@@ -68,7 +68,15 @@ function createBatch({ comments = [], accounts = [account], publicationPage = nu
     execute: async (input) => {
       calls.push(['generate', input]);
       if (input.externalCommentId === generateFailureFor) throw new IntelligenceProviderError('INTELLIGENCE_PROVIDER_UNAVAILABLE');
-      return { id: `suggestion-${input.externalCommentId}` };
+      const failures = input.externalCommentId === partialGenerateFor
+        ? [{ language: 'en-US', errorCode: 'INTELLIGENCE_PROVIDER_RATE_LIMITED' }]
+        : [];
+      return {
+        variants: ['pt-BR', 'en-US', 'es-ES']
+          .filter((language) => !failures.some((failure) => failure.language === language))
+          .map((language) => ({ id: `suggestion-${input.externalCommentId}-${language}`, payload: { language } })),
+        failures,
+      };
     },
   };
   const tenant = { resolveTenantId: async () => tenantId };
@@ -92,11 +100,23 @@ test('batch classification fans out per comment and preserves a partial provider
   assert.ok(callsToEvaluator.every(([, input]) => input.batchOperationId === result.batchOperationId));
 });
 
+test('batch generation reports partial language failures without discarding successful variants', async () => {
+  const comments = [storedComment('comment-1', 'video-1')];
+  const { batch } = createBatch({ comments, partialGenerateFor: 'comment-1' });
+
+  const result = await batch.execute({ operation: 'generate', scope: 'publication', accountId, publicationId: 'video-1' });
+
+  assert.equal(result.status, 'PARTIAL');
+  assert.equal(result.results[0].status, 'PARTIAL');
+  assert.deepEqual(result.results[0].failedLanguages, ['en-US']);
+  assert.equal(result.results[0].artifactIds.length, 2);
+});
+
 test('batch response generation supports all synchronized comments on one platform and preserves per-comment outcomes', async () => {
   const comments = [storedComment('comment-1', 'video-1'), storedComment('comment-2', 'video-2', secondAccount.id)];
   const { batch, calls } = createBatch({ accounts: [account, secondAccount], comments, generateFailureFor: 'comment-2' });
 
-  const result = await batch.execute({ operation: 'generate', scope: 'platform', platform: 'youtube', language: 'pt-BR' });
+  const result = await batch.execute({ operation: 'generate', scope: 'platform', platform: 'youtube' });
 
   assert.deepEqual(result.results.map(({ externalCommentId, accountId: resultAccountId, status }) => [externalCommentId, resultAccountId, status]), [
     ['comment-1', accountId, 'SUCCEEDED'], ['comment-2', secondAccountId, 'FAILED'],
@@ -104,7 +124,8 @@ test('batch response generation supports all synchronized comments on one platfo
   assert.equal(result.results[1].errorCode, 'INTELLIGENCE_PROVIDER_UNAVAILABLE');
   const callsToGenerator = calls.filter(([operation]) => operation === 'generate');
   assert.equal(callsToGenerator.length, 2);
-  assert.ok(callsToGenerator.every(([, input]) => input.language === 'pt-BR' && input.batchOperationId === result.batchOperationId));
+  assert.ok(callsToGenerator.every(([, input]) => !Object.hasOwn(input, 'language') && input.batchOperationId === result.batchOperationId));
+  assert.deepEqual(result.results[0].artifactIds, ['suggestion-comment-1-pt-BR', 'suggestion-comment-1-en-US', 'suggestion-comment-1-es-ES']);
 });
 
 test('batch classification covers all synchronized comments on one platform', async () => {
@@ -131,13 +152,16 @@ test('batch classification accepts TikTok as the selected platform', async () =>
   assert.deepEqual(calls.filter(([operation]) => operation === 'classify').map(([, input]) => input.externalCommentId), ['tiktok-comment-1']);
 });
 
-test('batch generation for one video returns one separately identified suggestion per comment', async () => {
+test('batch generation for one video returns three language variants for each comment', async () => {
   const comments = [storedComment('comment-1', 'video-1'), storedComment('comment-2', 'video-1')];
   const { batch, calls } = createBatch({ comments });
 
-  const result = await batch.execute({ operation: 'generate', scope: 'publication', accountId, publicationId: 'video-1', language: 'pt-BR' });
+  const result = await batch.execute({ operation: 'generate', scope: 'publication', accountId, publicationId: 'video-1' });
 
-  assert.deepEqual(result.results.map((item) => item.artifactId), ['suggestion-comment-1', 'suggestion-comment-2']);
+  assert.deepEqual(result.results.map((item) => item.artifactIds), [
+    ['suggestion-comment-1-pt-BR', 'suggestion-comment-1-en-US', 'suggestion-comment-1-es-ES'],
+    ['suggestion-comment-2-pt-BR', 'suggestion-comment-2-en-US', 'suggestion-comment-2-es-ES'],
+  ]);
   assert.equal(calls.filter(([operation]) => operation === 'generate').length, 2);
 });
 

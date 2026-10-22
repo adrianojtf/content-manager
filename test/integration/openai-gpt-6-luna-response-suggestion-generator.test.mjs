@@ -8,10 +8,34 @@ const { IntelligenceProviderError } = require('../../dist/application/social/int
 
 const input = {
   comment: { platform: 'youtube', text: 'What is the song name?', externalPublicationId: 'video-1' },
-  analysis: { sentiment: 'NEUTRAL', topic: 'MUSIC', spamScore: 0, toxicityScore: 0 },
+  analysis: {
+    sentiment: 'NEUTRAL',
+    topic: 'CONTENT',
+    spamScore: 0,
+    toxicityScore: 0,
+    engagementValue: 0.5,
+    continuationRequestProbability: 0.4,
+    confidence: 0.84,
+    rationale: null,
+    provider: 'JEV',
+    model: 'jev-1.14.0',
+    schemaVersion: 'typesafe-systemone-v1',
+    signals: {
+      sentiment: { confidence: 0.84, probabilities: { NEUTRAL: 0.84, POSITIVE: 0.12, NEGATIVE: 0.04 } },
+      needsExternalFacts: { probability: 0.7 },
+      requestsContinuation: { probability: 0.4 },
+    },
+    usage: { inputTokens: 100, outputTokens: 20 },
+  },
   language: 'en',
   model: 'gpt-6-luna',
   toneProfile: { primaryTone: 'PROFESSIONAL', modifiers: ['CONCISE', 'WARM'], customNote: 'Avoid slang.' },
+  verifiedReleaseSchedule: {
+    status: 'ACTIVE',
+    daysOfWeek: ['MONDAY', 'WEDNESDAY'],
+    localTime: '20:30',
+    timeZone: 'America/Sao_Paulo',
+  },
 };
 
 function jsonResponse(body, status = 200) {
@@ -50,8 +74,51 @@ test('OpenAI GPT-6 Luna uses Responses API structured output and returns model p
   assert.equal(body.text.format.type, 'json_schema');
   assert.equal(body.text.format.strict, true);
   assert.equal(body.text.format.schema.additionalProperties, false);
-  assert.deepEqual(JSON.parse(body.input[1].content).responseToneProfile, input.toneProfile);
+  const context = JSON.parse(body.input[1].content);
+  assert.deepEqual(context.responseToneProfile, input.toneProfile);
+  assert.deepEqual(context.verifiedReleaseSchedule, input.verifiedReleaseSchedule);
+  assert.deepEqual(context.commentAnalysis.signals, input.analysis.signals);
+  assert.equal(context.commentAnalysis.continuationRequestProbability, 0.4);
+  assert.equal('usage' in context.commentAnalysis, false);
+  assert.equal('provider' in context.commentAnalysis, false);
+  assert.equal('model' in context.commentAnalysis, false);
+  assert.match(body.input[0].content, /only when the comment concerns release timing/i);
+  assert.match(body.input[0].content, /never infer a schedule from a continuation request/i);
   assert.equal(JSON.stringify(result).includes('openai-test-secret'), false);
+});
+
+test('OpenAI receives no inactive schedule day/time facts', async () => {
+  const { generator, requests } = createGenerator([responseWithOutput(output)]);
+
+  await generator.generate({ ...input, verifiedReleaseSchedule: { status: 'UNCONFIGURED' } });
+
+  const body = JSON.parse(requests[0].init.body);
+  const context = JSON.parse(body.input[1].content);
+  assert.deepEqual(context.verifiedReleaseSchedule, { status: 'UNCONFIGURED' });
+});
+
+test('OpenAI generator uses encrypted runtime credentials instead of requiring an environment key', async () => {
+  const settings = {
+    get: async () => ({
+      jevApiKey: null,
+      geminiApiKey: null,
+      geminiDataUsePolicy: null,
+      openaiApiKey: 'saved-openai-secret',
+    }),
+  };
+  const requests = [];
+  const generator = new OpenAIGpt6LunaResponseSuggestionGenerator(
+    {},
+    async (url, init) => {
+      requests.push({ url, init });
+      return responseWithOutput(output);
+    },
+    settings,
+  );
+
+  await generator.generate(input);
+
+  assert.equal(new Headers(requests[0].init.headers).get('authorization'), 'Bearer saved-openai-secret');
 });
 
 test('OpenAI API key is lazy and a missing key causes no outbound request', async () => {

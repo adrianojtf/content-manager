@@ -18,11 +18,54 @@ test('Nest serves the CreatorDesk frontend and its static assets from the applic
     const baseUrl = await app.getUrl();
     const page = await fetch(`${baseUrl}/`);
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /CreatorDesk/);
+    const html = await page.text();
+    assert.match(html, /CreatorDesk/);
+    assert.match(html, /id="publicationPageSize"/);
+    assert.match(html, /<option value="5" selected>5<\/option>/);
+    assert.match(html, /<option value="10">10<\/option>/);
+    assert.match(html, /<option value="25">25<\/option>/);
+    assert.match(html, /id="syncPageStatus"[^>]*aria-live="polite"/);
+    assert.match(html, /id="aiProviderSettings"/);
+    assert.match(html, /data-i18n="settings.aiHeading"/);
+    assert.match(html, /id="verifiedReleaseScheduleToggle"/);
+    assert.match(html, /id="verifiedReleaseSchedulePanel"[^>]*hidden/);
 
     const stylesheet = await fetch(`${baseUrl}/styles.css`);
     assert.equal(stylesheet.status, 200);
     assert.match(stylesheet.headers.get('content-type') ?? '', /text\/css/);
+    const css = await stylesheet.text();
+    assert.match(css, /\.verified-schedule-panel/);
+    assert.match(css, /color-scheme: light dark/);
+
+    const themeModule = await fetch(`${baseUrl}/theme.mjs`);
+    assert.equal(themeModule.status, 200);
+    assert.match(themeModule.headers.get('content-type') ?? '', /javascript/);
+
+    const bulkReplyModule = await fetch(`${baseUrl}/bulk-replies.mjs`);
+    assert.equal(bulkReplyModule.status, 200);
+    assert.match(bulkReplyModule.headers.get('content-type') ?? '', /javascript/);
+
+    const uiFontSizeModule = await fetch(`${baseUrl}/ui-font-size.mjs`);
+    assert.equal(uiFontSizeModule.status, 200);
+    assert.match(uiFontSizeModule.headers.get('content-type') ?? '', /javascript/);
+
+    const accountSelectionModule = await fetch(`${baseUrl}/account-selection.mjs`);
+    assert.equal(accountSelectionModule.status, 200);
+    assert.match(accountSelectionModule.headers.get('content-type') ?? '', /javascript/);
+
+    for (const locale of ['en-US', 'es-ES']) {
+      for (const catalogPath of [
+        `/locales/${locale}.mjs`,
+        `/locales/${locale}/common.mjs`,
+        `/locales/${locale}/settings.mjs`,
+        `/locales/${locale}/comments.mjs`,
+        `/locales/${locale}/errors.mjs`,
+      ]) {
+        const catalog = await fetch(`${baseUrl}${catalogPath}`);
+        assert.equal(catalog.status, 200, `${catalogPath} should be served`);
+        assert.match(catalog.headers.get('content-type') ?? '', /javascript/);
+      }
+    }
   } finally {
     await app.close();
   }
