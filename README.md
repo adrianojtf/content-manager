@@ -30,6 +30,12 @@ The application remains responsible for deterministic business rules, permission
 - Modular Monolith
 - JEV through an `IntelligenceProvider` port
 
+## Deployment Migration
+
+The deployment plan has two phases: a restricted single-VM Docker Compose pilot, followed by a separately selected managed-cloud target. See the [deployment specification](docs/specifications/technical-deployment-migration.md) and [ADR-007](docs/architecture/decisions/ADR-007-deployment-portability.md).
+
+The VM artifacts are `Dockerfile`, `ops/docker-vm.compose.yaml`, and `ops/Caddyfile`; the [VM runbook](ops/docker-vm-runbook.md) covers configuration, migrations, backups, and rollback. The Compose deployment runs the API, PostgreSQL, and HTTPS reverse proxy on one host; it is not highly available. Copy the example environment files under `ops/` to `/etc/content-manager/`, restrict inbound access at the VM firewall to the trusted pilot audience, and keep all runtime secrets outside the repository and image. Do not expose the pilot publicly until product-user authentication and tenant authorization are active.
+
 ## Adapter Configuration and Tests
 
 Infrastructure adapters receive configuration at the composition boundary: PostgreSQL uses `pg` pool configuration (normally from `DATABASE_URL`), RabbitMQ connects with `RABBITMQ_URL`, and S3 storage uses a bucket, region, and optional compatible-service endpoint. Auth0 is selected for IAM-07. Set `OIDC_ISSUER` to the exact issuer from Auth0 OIDC Discovery, `OIDC_AUDIENCE` to the registered API identifier, and `OIDC_JWKS_URI` to Discovery's `jwks_uri`; the API expects an access token for that audience, not an ID token, and currently allows `RS256`. The OIDC verifier requires HTTPS outside localhost tests and never logs bearer tokens. The Next.js console will use server-only Auth0 settings (`AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_SECRET`, and `APP_BASE_URL`) when IAM-06 is implemented. Store client/session secrets, AWS credentials, and connection strings in environment variables or a secret manager; never commit them. See [Auth0 OIDC Discovery](https://auth0.com/docs/get-started/applications/configure-applications-with-oidc-discovery), [JWT access-token validation](https://auth0.com/docs/secure/tokens/access-tokens/validate-access-tokens), and the [Next.js SDK setup](https://auth0.com/docs/quickstart/webapp/nextjs).
