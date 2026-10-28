@@ -311,7 +311,7 @@ test('SendManualCommentReply persists an attempt before dispatch and records the
     append: async (input) => { calls.push(['append', input]); const event = { ...input, id: `event-${calls.length}`, expiresAt: comment.expiresAt }; events.push(event); return event; },
   };
   const responder = { reply: async (_account, _comment, text) => { calls.push(['reply', text]); return { platform: 'youtube', externalReplyId: 'reply-1' }; } };
-  const useCase = new SendManualCommentReply({ findById: async () => account }, { findByExternalCommentId: async () => comment, markRepliedByApp: async () => {} }, responder, workflowEvents, { resolveTenantId: async () => tenantId }, { generate: () => '60000000-0000-4000-8000-000000000001' }, now);
+  const useCase = new SendManualCommentReply({ findById: async () => account }, { findByExternalCommentId: async () => comment, markRepliedByApp: async () => {} }, responder, workflowEvents, { resolveTenantId: async () => tenantId }, { generate: () => '60000000-0000-4000-8000-000000000001' }, { execute: async () => false }, now);
 
   const result = await useCase.execute({ accountId, externalCommentId: comment.externalCommentId, revisionEventId: revision.id });
 
@@ -350,6 +350,7 @@ test('SendManualCommentReply sends the selected generated language variant witho
     eventRepository,
     { resolveTenantId: async () => tenantId },
     { generate: () => '60000000-0000-4000-8000-000000000006' },
+    { execute: async () => false },
     now,
   );
 
@@ -373,7 +374,7 @@ test('SendManualCommentReply fails closed after an ambiguous recorded attempt an
   const events = [{ id: 'suggestion-1', eventType: 'RESPONSE_SUGGESTION_GENERATED', payload: { text: 'Generated' } }, revision, evaluation,
     { id: 'attempt-1', eventType: 'MANUAL_REPLY_ATTEMPTED', status: 'IN_PROGRESS', payload: { revisionEventId: revision.id } }];
   let calls = 0;
-  const useCase = new SendManualCommentReply({ findById: async () => account }, { findByExternalCommentId: async () => comment, markRepliedByApp: async () => {} }, { reply: async () => { calls += 1; } }, { listByComment: async () => events, append: async () => { calls += 1; } }, { resolveTenantId: async () => tenantId }, { generate: () => '60000000-0000-4000-8000-000000000001' }, now);
+  const useCase = new SendManualCommentReply({ findById: async () => account }, { findByExternalCommentId: async () => comment, markRepliedByApp: async () => {} }, { reply: async () => { calls += 1; } }, { listByComment: async () => events, append: async () => { calls += 1; } }, { resolveTenantId: async () => tenantId }, { generate: () => '60000000-0000-4000-8000-000000000001' }, { execute: async () => false }, now);
 
   await assert.rejects(useCase.execute({ accountId, externalCommentId: comment.externalCommentId, revisionEventId: revision.id }), /MANUAL_REPLY_ATTEMPT_ALREADY_EXISTS/);
   assert.equal(calls, 0);
@@ -388,7 +389,7 @@ test('SendManualCommentReply records ambiguous provider outcome and blocks a sec
   ];
   let dispatches = 0;
   const eventRepository = { listByComment: async () => events, append: async (input) => { const stored = { ...input, id: `event-${events.length}`, expiresAt: comment.expiresAt }; events.push(stored); return stored; } };
-  const useCase = new SendManualCommentReply({ findById: async () => account }, { findByExternalCommentId: async () => comment, markRepliedByApp: async () => {} }, { reply: async () => { dispatches += 1; throw new Error('uncertain outcome'); } }, eventRepository, { resolveTenantId: async () => tenantId }, { generate: () => '60000000-0000-4000-8000-000000000002' }, now);
+  const useCase = new SendManualCommentReply({ findById: async () => account }, { findByExternalCommentId: async () => comment, markRepliedByApp: async () => {} }, { reply: async () => { dispatches += 1; throw new Error('uncertain outcome'); } }, eventRepository, { resolveTenantId: async () => tenantId }, { generate: () => '60000000-0000-4000-8000-000000000002' }, { execute: async () => false }, now);
 
   await assert.rejects(useCase.execute({ accountId, externalCommentId: comment.externalCommentId, revisionEventId: revision.id }), (error) => error.code === 'SOCIAL_PROVIDER_RESULT_AMBIGUOUS');
   const result = events.find((event) => event.eventType === 'MANUAL_REPLY_RESULT');
@@ -403,7 +404,7 @@ test('SendManualCommentReply treats JEV REJECT as advisory and still requires ex
   const events = [{ id: 'suggestion-1', eventType: 'RESPONSE_SUGGESTION_GENERATED', payload: { text: 'Generated' } }, revision,
     { id: 'evaluation-1', eventType: 'RESPONSE_EVALUATED', parentEventId: revision.id, status: 'SUCCEEDED', payload: { revisionEventId: revision.id, evaluation: { publishRecommendation: 'REJECT' } } }];
   let sends = 0;
-  const useCase = new SendManualCommentReply({ findById: async () => account }, { findByExternalCommentId: async () => comment, markRepliedByApp: async () => {} }, { reply: async () => { sends += 1; return { platform: 'youtube', externalReplyId: 'reply-1' }; } }, { listByComment: async () => events, append: async (event) => { events.push(event); return event; } }, { resolveTenantId: async () => tenantId }, { generate: () => '60000000-0000-4000-8000-000000000003' }, now);
+  const useCase = new SendManualCommentReply({ findById: async () => account }, { findByExternalCommentId: async () => comment, markRepliedByApp: async () => {} }, { reply: async () => { sends += 1; return { platform: 'youtube', externalReplyId: 'reply-1' }; } }, { listByComment: async () => events, append: async (event) => { events.push(event); return event; } }, { resolveTenantId: async () => tenantId }, { generate: () => '60000000-0000-4000-8000-000000000003' }, { execute: async () => false }, now);
 
   const result = await useCase.execute({ accountId, externalCommentId: comment.externalCommentId, revisionEventId: revision.id });
   assert.equal(result.status, 'SUCCEEDED');
@@ -416,7 +417,7 @@ test('SendManualCommentReply treats JEV REVIEW as advisory and still requires ex
   const events = [{ id: 'suggestion-1', eventType: 'RESPONSE_SUGGESTION_GENERATED', payload: { text: 'Generated' } }, revision,
     { id: 'evaluation-1', eventType: 'RESPONSE_EVALUATED', parentEventId: revision.id, status: 'SUCCEEDED', payload: { revisionEventId: revision.id, evaluation: { publishRecommendation: 'REVIEW' } } }];
   let sends = 0;
-  const useCase = new SendManualCommentReply({ findById: async () => account }, { findByExternalCommentId: async () => comment, markRepliedByApp: async () => {} }, { reply: async () => { sends += 1; return { platform: 'youtube', externalReplyId: 'reply-review' }; } }, { listByComment: async () => events, append: async (event) => { events.push(event); return event; } }, { resolveTenantId: async () => tenantId }, { generate: () => '60000000-0000-4000-8000-000000000005' }, now);
+  const useCase = new SendManualCommentReply({ findById: async () => account }, { findByExternalCommentId: async () => comment, markRepliedByApp: async () => {} }, { reply: async () => { sends += 1; return { platform: 'youtube', externalReplyId: 'reply-review' }; } }, { listByComment: async () => events, append: async (event) => { events.push(event); return event; } }, { resolveTenantId: async () => tenantId }, { generate: () => '60000000-0000-4000-8000-000000000005' }, { execute: async () => false }, now);
 
   const result = await useCase.execute({ accountId, externalCommentId: comment.externalCommentId, revisionEventId: revision.id });
 
@@ -428,7 +429,7 @@ test('SendManualCommentReply accepts a creator-authored response without comment
   const manualResponse = { id: 'manual-response-1', eventType: 'MANUAL_RESPONSE_CREATED', payload: { text: 'Resposta escrita diretamente.' } };
   const events = [manualResponse];
   let sends = 0;
-  const useCase = new SendManualCommentReply({ findById: async () => account }, { findByExternalCommentId: async () => comment, markRepliedByApp: async () => {} }, { reply: async (_account, _comment, text) => { sends += 1; assert.equal(text, manualResponse.payload.text); return { platform: 'youtube', externalReplyId: 'reply-2' }; } }, { listByComment: async () => events, append: async (event) => { const stored = { ...event, id: `event-${events.length}`, expiresAt: comment.expiresAt }; events.push(stored); return stored; } }, { resolveTenantId: async () => tenantId }, { generate: () => '60000000-0000-4000-8000-000000000004' }, now);
+  const useCase = new SendManualCommentReply({ findById: async () => account }, { findByExternalCommentId: async () => comment, markRepliedByApp: async () => {} }, { reply: async (_account, _comment, text) => { sends += 1; assert.equal(text, manualResponse.payload.text); return { platform: 'youtube', externalReplyId: 'reply-2' }; } }, { listByComment: async () => events, append: async (event) => { const stored = { ...event, id: `event-${events.length}`, expiresAt: comment.expiresAt }; events.push(stored); return stored; } }, { resolveTenantId: async () => tenantId }, { generate: () => '60000000-0000-4000-8000-000000000004' }, { execute: async () => false }, now);
 
   const result = await useCase.execute({ accountId, externalCommentId: comment.externalCommentId, revisionEventId: manualResponse.id });
   assert.equal(result.status, 'SUCCEEDED');

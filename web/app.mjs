@@ -5,6 +5,7 @@ import {
   eligibleSemiAutomaticReplyRows,
   generateSemiAutomaticReplies,
   loadSemiAutomaticReplyComments,
+  regenerateSemiAutomaticReply,
   sendApprovedSemiAutomaticReplies,
 } from './bulk-replies.mjs';
 import {
@@ -1540,12 +1541,23 @@ function updateBulkLanguage(commentId, language) {
   focusBulkControl('bulk-response-language', commentId);
 }
 
-function updateBulkTone(commentId, primaryTone) {
+async function updateBulkTone(commentId, primaryTone) {
   const row = findBulkRow(state.bulkReply, commentId);
-  if (!row || row.approved) return;
+  if (!row || row.approved || row.toneProfile?.primaryTone === primaryTone) return;
   row.toneProfile = { ...copyToneProfile(row.toneProfile), primaryTone };
   render();
   focusBulkControl('bulk-response-tone', commentId);
+  const response = responseVersionDetails(row.events ?? [], row.language);
+  const generatedRoot = response?.rootId
+    ? (row.events ?? []).find((event) => event.id === response.rootId)
+    : null;
+  const generatedTone = response?.version?.payload?.toneProfile?.primaryTone
+    ?? generatedRoot?.payload?.toneProfile?.primaryTone
+    ?? 'FRIENDLY';
+  if (response && primaryTone !== generatedTone) {
+    await regenerateBulkRow(commentId);
+    focusBulkControl('bulk-response-tone', commentId);
+  }
 }
 
 function focusBulkControl(role, commentId) {
@@ -1560,8 +1572,7 @@ async function regenerateBulkRow(commentId) {
   const previous = responseVersionDetails(row.events ?? [], row.language);
   if (hasUnsavedBulkRowEdits(row)
     && !window.confirm(t('bulkReplies.confirmRegenerate'))) return;
-  const analysisEvent = latestAnalysisEvent(row.events ?? []);
-  if (!analysisEvent) {
+  if (!latestAnalysisEvent(row.events ?? [])) {
     showToast(t('error.analysisRequired'), { error: true });
     return;
   }
@@ -1570,20 +1581,17 @@ async function regenerateBulkRow(commentId) {
   row.status = 'generating';
   render();
   try {
-    const generated = await api.generateResponse(bulk.accountId, commentId, {
-      analysisEventId: analysisEvent.id,
+    const regenerated = await regenerateSemiAutomaticReply(api, {
+      accountId: bulk.accountId,
+      commentId,
+      events: row.events ?? [],
       toneOverride: row.toneProfile.primaryTone,
     });
-    try {
-      row.events = await api.getWorkflow(bulk.accountId, commentId);
-      row.historyWarning = false;
-    } catch {
-      row.events = mergeBulkEvents(row.events, generated.variants ?? []);
-      row.historyWarning = true;
-    }
-    row.failures = generated.failures ?? [];
+    row.events = regenerated.events;
+    row.historyWarning = regenerated.historyWarning;
+    row.failures = regenerated.failures;
     row.errorCode = row.failures[0]?.errorCode ?? null;
-    row.status = generated.variants?.length ? (row.failures.length ? 'partial' : 'ready') : 'failed';
+    row.status = regenerated.variants.length ? (row.failures.length ? 'partial' : 'ready') : 'failed';
     row.drafts?.clear();
     row.approved = false;
     if (!responseVersionDetails(row.events, row.language)) {
@@ -1593,18 +1601,18 @@ async function regenerateBulkRow(commentId) {
     state.workflows.set(commentKey(bulk.accountId, commentId), row.events);
   } catch (error) {
     row.status = previous ? 'ready' : 'failed';
-    row.errorCode = error?.code ?? 'COMMENT_WORKFLOW_FAILED';
-    await refreshWorkflowQuietly(bulk.accountId, commentId);
-    row.events = state.workflows.get(commentKey(bulk.accountId, commentId)) ?? row.events;
+    if (error?.code === 'COMMENT_ANALYSIS_NOT_FOUND') {
+      row.errorCode = null;
+      showToast(t('error.analysisRequired'), { error: true });
+    } else {
+      row.errorCode = error?.code ?? 'COMMENT_WORKFLOW_FAILED';
+      await refreshWorkflowQuietly(bulk.accountId, commentId);
+      row.events = state.workflows.get(commentKey(bulk.accountId, commentId)) ?? row.events;
+    }
   } finally {
     bulk.busy = false;
     render();
   }
-}
-
-function mergeBulkEvents(events = [], additions = []) {
-  const knownIds = new Set(events.map((event) => event.id));
-  return [...events, ...additions.filter((event) => event?.id && !knownIds.has(event.id))];
 }
 
 async function approveBulkReplies(commentIds) {
@@ -2217,7 +2225,7 @@ function attachEvents() {
     } else if (target.matches('[data-role="bulk-response-language"]')) {
       updateBulkLanguage(commentId, target.value);
     } else if (target.matches('[data-role="bulk-response-tone"]')) {
-      updateBulkTone(commentId, target.value);
+      void updateBulkTone(commentId, target.value);
     }
   });
   $('#bulkReplyDialog').addEventListener('input', (event) => {

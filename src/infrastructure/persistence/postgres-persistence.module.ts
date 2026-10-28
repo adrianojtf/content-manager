@@ -9,6 +9,7 @@ import type { SocialPublicationRepository } from '../../application/ports/social
 import type { SocialCommentLiker, SocialCommentReader, SocialCommentResponder, SocialCommentResponderRegistry } from '../../application/ports/social-comment.port';
 import type { SocialCommentRepository } from '../../application/ports/social-comment-repository.port';
 import type { CommentWorkflowEventRepository } from '../../application/ports/comment-workflow-event-repository.port';
+import type { ResponseRefinementPairRepository } from '../../application/ports/response-refinement-pair-repository.port';
 import type { CommentEvaluator } from '../../application/ports/comment-evaluator.port';
 import type { ResponseEvaluator } from '../../application/ports/response-evaluator.port';
 import type { ResponseSuggestionGenerator } from '../../application/ports/response-suggestion-generator.port';
@@ -41,6 +42,7 @@ import { GetCommentSummary } from '../../application/social/comment-summary';
 import { SetCommentLike } from '../../application/social/set-comment-like';
 import { EvaluateComment, EvaluateResponseSuggestion, GenerateCommentResponseSuggestion } from '../../application/social/comment-intelligence.usecases';
 import { SendManualCommentReply } from '../../application/social/send-manual-comment-reply';
+import { RecordResponseRefinementPair } from '../../application/social/record-response-refinement-pair';
 import { ListCommentWorkflowBatchEvents, RunCommentWorkflowBatch } from '../../application/social/run-comment-workflow-batch';
 import { ConfiguredResponseSuggestionGenerator, GetResponseGenerationSettings, UpdateResponseGenerationSettings } from '../../application/social/response-generation-settings';
 import { GetAccountResponseToneSettings, GetTenantResponseToneSettings, UpdateAccountResponseToneSettings, UpdateTenantResponseToneSettings } from '../../application/social/response-tone-settings';
@@ -62,6 +64,7 @@ import { PostgresSocialPublicationRepository } from './postgres-social-publicati
 import { PostgresSocialCredentialVault } from './postgres-social-credential-vault';
 import { PostgresSocialCommentRepository } from './postgres-social-comment.repository';
 import { PostgresCommentWorkflowEventRepository } from './postgres-comment-workflow-event.repository';
+import { PostgresResponseRefinementPairRepository } from './postgres-response-refinement-pair.repository';
 import { PostgresResponseGenerationSettingsRepository } from './postgres-response-generation-settings.repository';
 import { PostgresAIProviderSettingsRepository } from './postgres-ai-provider-settings.repository';
 import { PostgresSocialAccountResponseToneSettingsRepository } from './postgres-social-account-response-tone-settings.repository';
@@ -115,6 +118,7 @@ export const SOCIAL_COMMENT_LIKER = Symbol('SOCIAL_COMMENT_LIKER');
 export const SOCIAL_COMMENT_REPOSITORY = Symbol('SOCIAL_COMMENT_REPOSITORY');
 export const SOCIAL_COMMENT_READERS = Symbol('SOCIAL_COMMENT_READERS');
 export const COMMENT_WORKFLOW_EVENT_REPOSITORY = Symbol('COMMENT_WORKFLOW_EVENT_REPOSITORY');
+export const RESPONSE_REFINEMENT_PAIR_REPOSITORY = Symbol('RESPONSE_REFINEMENT_PAIR_REPOSITORY');
 export const COMMENT_EVALUATOR = Symbol('COMMENT_EVALUATOR');
 export const RESPONSE_EVALUATOR = Symbol('RESPONSE_EVALUATOR');
 export const RESPONSE_SUGGESTION_GENERATOR = Symbol('RESPONSE_SUGGESTION_GENERATOR');
@@ -198,6 +202,16 @@ export class PostgresPersistenceModule {
           provide: COMMENT_WORKFLOW_EVENT_REPOSITORY,
           useFactory: (database: RelationalDatabase): CommentWorkflowEventRepository => new PostgresCommentWorkflowEventRepository(database),
           inject: [RELATIONAL_DATABASE],
+        },
+        {
+          provide: RESPONSE_REFINEMENT_PAIR_REPOSITORY,
+          useFactory: (database: RelationalDatabase): ResponseRefinementPairRepository => new PostgresResponseRefinementPairRepository(database),
+          inject: [RELATIONAL_DATABASE],
+        },
+        {
+          provide: RecordResponseRefinementPair,
+          useFactory: (pairs: ResponseRefinementPairRepository) => new RecordResponseRefinementPair(pairs),
+          inject: [RESPONSE_REFINEMENT_PAIR_REPOSITORY],
         },
         {
           provide: RESPONSE_GENERATION_SETTINGS_REPOSITORY,
@@ -497,8 +511,8 @@ export class PostgresPersistenceModule {
         },
         {
           provide: SendManualCommentReply,
-          useFactory: (accounts: SocialAccountRepository, comments: SocialCommentRepository, responder: SocialCommentResponder, events: CommentWorkflowEventRepository, tenant: LocalPilotTenantContext, attemptIds: ManualReplyAttemptIdGenerator) => new SendManualCommentReply(accounts, comments, responder, events, tenant, attemptIds),
-          inject: [SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_COMMENT_REPOSITORY, SOCIAL_COMMENT_RESPONDER, COMMENT_WORKFLOW_EVENT_REPOSITORY, LocalPilotTenantContext, UuidManualReplyAttemptIdGenerator],
+          useFactory: (accounts: SocialAccountRepository, comments: SocialCommentRepository, responder: SocialCommentResponder, events: CommentWorkflowEventRepository, tenant: LocalPilotTenantContext, attemptIds: ManualReplyAttemptIdGenerator, refinementPairs: RecordResponseRefinementPair) => new SendManualCommentReply(accounts, comments, responder, events, tenant, attemptIds, refinementPairs),
+          inject: [SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_COMMENT_REPOSITORY, SOCIAL_COMMENT_RESPONDER, COMMENT_WORKFLOW_EVENT_REPOSITORY, LocalPilotTenantContext, UuidManualReplyAttemptIdGenerator, RecordResponseRefinementPair],
         },
         {
           provide: SetCommentLike,

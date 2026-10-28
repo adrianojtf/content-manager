@@ -6,6 +6,7 @@ import {
   generateSemiAutomaticReplies,
   isConfirmedUnanswered,
   loadSemiAutomaticReplyComments,
+  regenerateSemiAutomaticReply,
   sendApprovedSemiAutomaticReplies,
 } from '../../web/bulk-replies.mjs';
 
@@ -402,4 +403,88 @@ test('generated variants remain available when the follow-up history read fails'
   assert.equal(rows[0].status, 'ready');
   assert.equal(rows[0].historyWarning, true);
   assert.equal(rows[0].events.at(-1).id, 'suggestion-1');
+});
+
+test('tone regeneration reuses the existing analysis and only generates new suggestions', async () => {
+  const calls = [];
+  const existingEvents = [
+    { id: 'analysis-failed', eventType: 'COMMENT_ANALYSIS_CREATED', status: 'FAILED', payload: {} },
+    { id: 'analysis-1', eventType: 'COMMENT_ANALYSIS_CREATED', status: 'SUCCEEDED', payload: { sentiment: 'NEUTRAL' } },
+    { id: 'suggestion-1', eventType: 'RESPONSE_SUGGESTION_GENERATED', status: 'SUCCEEDED', payload: { language: 'pt-BR', text: 'Original', toneProfile: { primaryTone: 'FRIENDLY' } } },
+  ];
+  const regenerated = {
+    id: 'suggestion-2',
+    eventType: 'RESPONSE_SUGGESTION_GENERATED',
+    status: 'SUCCEEDED',
+    payload: { language: 'pt-BR', text: 'Novo tom', toneProfile: { primaryTone: 'CASUAL' } },
+  };
+  const api = {
+    classify: async () => { calls.push(['classify']); throw new Error('must not re-evaluate'); },
+    generateResponse: async (accountId, commentId, options) => {
+      calls.push(['generate', commentId, options]);
+      return { variants: [regenerated], failures: [] };
+    },
+    getWorkflow: async (accountId, commentId) => {
+      calls.push(['workflow', commentId]);
+      return [...existingEvents, regenerated];
+    },
+  };
+
+  const result = await regenerateSemiAutomaticReply(api, {
+    accountId: 'account-1',
+    commentId: 'comment-1',
+    events: existingEvents,
+    toneOverride: 'CASUAL',
+  });
+
+  assert.deepEqual(calls, [
+    ['generate', 'comment-1', { analysisEventId: 'analysis-1', toneOverride: 'CASUAL' }],
+    ['workflow', 'comment-1'],
+  ]);
+  assert.equal(result.events.at(-1).id, 'suggestion-2');
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.historyWarning, false);
+});
+
+test('tone regeneration merges generated variants when the history read fails', async () => {
+  const existingEvents = [
+    { id: 'analysis-1', eventType: 'COMMENT_ANALYSIS_CREATED', status: 'SUCCEEDED', payload: {} },
+  ];
+  const regenerated = { id: 'suggestion-2', eventType: 'RESPONSE_SUGGESTION_GENERATED', status: 'SUCCEEDED', payload: { language: 'pt-BR' } };
+  const api = {
+    generateResponse: async () => ({ variants: [regenerated], failures: [{ language: 'en-US', errorCode: 'X' }] }),
+    getWorkflow: async () => { throw Object.assign(new Error('unavailable'), { code: 'API_UNAVAILABLE' }); },
+  };
+
+  const result = await regenerateSemiAutomaticReply(api, {
+    accountId: 'account-1',
+    commentId: 'comment-1',
+    events: existingEvents,
+    toneOverride: 'EMPATHETIC',
+  });
+
+  assert.equal(result.historyWarning, true);
+  assert.deepEqual(result.events.map((event) => event.id), ['analysis-1', 'suggestion-2']);
+  assert.deepEqual(result.failures, [{ language: 'en-US', errorCode: 'X' }]);
+});
+
+test('tone regeneration fails with COMMENT_ANALYSIS_NOT_FOUND without classifying when no usable analysis exists', async () => {
+  const calls = [];
+  const api = {
+    classify: async () => { calls.push(['classify']); },
+    generateResponse: async () => { calls.push(['generate']); },
+    getWorkflow: async () => { calls.push(['workflow']); },
+  };
+
+  await assert.rejects(
+    regenerateSemiAutomaticReply(api, {
+      accountId: 'account-1',
+      commentId: 'comment-1',
+      events: [{ id: 'analysis-failed', eventType: 'COMMENT_ANALYSIS_CREATED', status: 'FAILED', payload: {} }],
+      toneOverride: 'CASUAL',
+    }),
+    (error) => error.code === 'COMMENT_ANALYSIS_NOT_FOUND',
+  );
+
+  assert.deepEqual(calls, []);
 });

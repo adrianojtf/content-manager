@@ -748,7 +748,7 @@ function renderBulkReplyRow(row, model) {
       </div>
       <p class="bulk-comment-text">${escapeHtml(comment.text || t('comment.unavailableText'))}</p>
       ${comment.canReply ? '' : `<p class="bulk-unsupported-note">${t('comment.replyUnsupported')}</p>`}
-      ${analysis ? renderAnalysisSummary(analysis) : ''}
+      ${analysis ? renderAnalysis(analysis) : ''}
     </section>
     <section class="bulk-response-pane" aria-label="${t('bulkReplies.reply')}">
       <div class="bulk-pane-heading"><span class="bulk-ai-mark" aria-hidden="true">AI</span><strong>${responseLabel}</strong>${response ? `<span class="pill ai">${t('comment.generate')}</span>` : ''}</div>

@@ -96,6 +96,7 @@ Platform capabilities are independent. Validate each operation against current o
 - [Social Accounts and Publishing](prds/social-publishing.md) — [Tech spec](../specifications/technical-social-publishing.md)
 - [Publication Analytics](prds/analytics.md) — [Tech spec](../specifications/technical-analytics.md)
 - [Community Management](prds/community-management.md) — [Tech spec](../specifications/technical-community-management.md)
+- [AI Response Refinement Dataset](prds/response-refinement.md) — [Tech spec](../specifications/technical-response-refinement.md)
 - [Audience and Content Intelligence](prds/audience-intelligence.md) — [Tech spec](../specifications/technical-audience-intelligence.md)
 - [MVP implementation backlog (epics and tasks)](implementation-backlog.md)
 

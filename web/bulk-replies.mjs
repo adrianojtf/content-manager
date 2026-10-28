@@ -117,6 +117,36 @@ export async function generateSemiAutomaticReplies(api, {
   return rows;
 }
 
+export async function regenerateSemiAutomaticReply(api, {
+  accountId,
+  commentId,
+  events,
+  toneOverride,
+}) {
+  const analysisEvent = latestSuccessfulAnalysis(events);
+  if (!analysisEvent) {
+    throw Object.assign(new Error('COMMENT_ANALYSIS_NOT_FOUND'), { code: 'COMMENT_ANALYSIS_NOT_FOUND' });
+  }
+  const generation = await api.generateResponse(accountId, commentId, {
+    analysisEventId: analysisEvent.id,
+    ...(toneOverride ? { toneOverride } : {}),
+  });
+  let refreshedEvents;
+  let historyWarning = false;
+  try {
+    refreshedEvents = await api.getWorkflow(accountId, commentId);
+  } catch {
+    refreshedEvents = mergeEvents(events ?? [], generation.variants ?? []);
+    historyWarning = true;
+  }
+  return {
+    events: refreshedEvents,
+    failures: generation.failures ?? [],
+    variants: generation.variants ?? [],
+    historyWarning,
+  };
+}
+
 export async function approveSemiAutomaticReplies(api, {
   accountId,
   rows,

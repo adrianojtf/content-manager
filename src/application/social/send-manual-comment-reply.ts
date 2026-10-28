@@ -7,6 +7,7 @@ import type { SocialCommentResponder } from '../ports/social-comment.port';
 import { parseSocialAccountId } from '../../domain/social/social-account-id';
 import { CommentWorkflowAuditError } from './comment-workflow-audit-error';
 import { isLatestResponseVersionForSelection, isResponseVersionEventType } from './comment-workflow-audit';
+import type { RecordResponseRefinementPair } from './record-response-refinement-pair';
 import { SocialProviderError } from './social-provider-error';
 
 export interface SendManualCommentReplyInput {
@@ -23,6 +24,7 @@ export class SendManualCommentReply {
     private readonly events: CommentWorkflowEventRepository,
     private readonly tenant: PilotTenantContext,
     private readonly attemptIds: ManualReplyAttemptIdGenerator,
+    private readonly refinementPairs: Pick<RecordResponseRefinementPair, 'execute'>,
     private readonly now: () => number = Date.now,
   ) {}
 
@@ -86,6 +88,21 @@ export class SendManualCommentReply {
       } catch {
         appReplyStatusPersisted = false;
       }
+      let refinementPairPersisted = false;
+      try {
+        refinementPairPersisted = await this.refinementPairs.execute({
+          tenantId,
+          socialAccountId: account.id,
+          platform: account.platform,
+          manualReplyAttemptId: attemptId,
+          sentVersionEventId: revision.id,
+          history,
+          recordedAt: new Date(this.now()).toISOString(),
+        });
+      } catch (captureError) {
+        console.warn('[response-refinement] pair capture failed tenant=%s account=%s attempt=%s error=%s',
+          tenantId, account.id, attemptId, captureError instanceof Error ? captureError.message : 'unknown');
+      }
       return await this.events.append({
         tenantId,
         socialAccountId: account.id,
@@ -96,7 +113,7 @@ export class SendManualCommentReply {
         operationId: attemptId,
         batchOperationId: null,
         parentEventId: attempt.id,
-        payload: { attemptId, responseVersionEventId: revision.id, revisionEventId: revision.id, externalReplyId: reply.externalReplyId, platform: reply.platform, appReplyStatusPersisted },
+        payload: { attemptId, responseVersionEventId: revision.id, revisionEventId: revision.id, externalReplyId: reply.externalReplyId, platform: reply.platform, appReplyStatusPersisted, refinementPairPersisted },
         recordedAt: new Date(this.now()).toISOString(),
       });
     } catch (error) {

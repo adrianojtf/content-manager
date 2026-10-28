@@ -204,7 +204,7 @@ export function isLatestResponseVersionForSelection(history: readonly CommentWor
   return !latestManualVersion || versions.indexOf(latestManualVersion) < versions.indexOf(revision);
 }
 
-function responseVersionRootId(event: CommentWorkflowEvent): string | null {
+export function responseVersionRootId(event: CommentWorkflowEvent): string | null {
   if (event.eventType === 'RESPONSE_SUGGESTION_GENERATED' || event.eventType === 'MANUAL_RESPONSE_CREATED') {
     return event.id;
   }

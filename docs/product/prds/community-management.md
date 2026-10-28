@@ -1,7 +1,7 @@
 # PRD — Community Management
 
 **Status:** Draft — open product decisions are listed below.  
-**Tech spec:** [Technical Specification — Community Management](../../specifications/technical-community-management.md) · **Synchronization PRD:** [Social Content Synchronization](social-content-synchronization.md)
+**Tech spec:** [Technical Specification — Community Management](../../specifications/technical-community-management.md) · **Synchronization PRD:** [Social Content Synchronization](social-content-synchronization.md) · **Refinement PRD:** [AI Response Refinement Dataset](response-refinement.md)
 
 ## 1. Objective
 

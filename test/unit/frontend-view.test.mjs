@@ -735,3 +735,51 @@ test('network tabs distinguish unrequested publication pages from an empty loade
   assert.match(html, /Facebook<span class="tab-count">—<\/span>/);
   assert.match(html, /TikTok<span class="tab-count">0<\/span>/);
 });
+
+test('bulk reply row shows the same analysis fields as the individual comment evaluation', () => {
+  const analysis = {
+    sentiment: 'NEUTRAL', emotion: 'CURIOSITY', intent: 'QUESTION', topic: 'MUSIC', entity: 'Song',
+    spamScore: 0.1, toxicityScore: 0.02, engagementValue: 0.5, confidence: 0.92,
+    continuationRequestProbability: 0.4,
+    provider: 'JEV', model: 'deterministic-test', schemaVersion: '1',
+    signals: { needsExternalFacts: { probability: 0.7 } },
+  };
+  const events = [
+    { id: 'analysis-1', eventType: 'COMMENT_ANALYSIS_CREATED', status: 'SUCCEEDED', payload: analysis },
+    { id: 'correction-1', eventType: 'COMMENT_ANALYSIS_CORRECTED', status: 'SUCCEEDED', parentEventId: 'analysis-1', payload: { correctedFields: { topic: 'SONG_RELEASE' } } },
+    {
+      id: 'suggestion-1',
+      eventType: 'RESPONSE_SUGGESTION_GENERATED',
+      status: 'SUCCEEDED',
+      payload: { language: 'pt-BR', text: 'Resposta', toneProfile: { primaryTone: 'FRIENDLY', modifiers: [], customNote: null } },
+    },
+  ];
+  const html = renderBulkReplyDialog({
+    open: true,
+    status: 'review',
+    videoTitle: 'Video',
+    accountName: 'Creator',
+    rows: [{
+      comment: { ...comment, externalReplyStatus: 'NOT_REPLIED', appReplied: false },
+      status: 'ready',
+      language: 'pt-BR',
+      toneProfile: { primaryTone: 'FRIENDLY', modifiers: [], customNote: null },
+      events,
+      draft: 'Resposta',
+      errorCode: null,
+      approved: false,
+    }],
+    selectedIds: new Set(),
+    busy: false,
+    progress: null,
+    syncWarning: null,
+    errorCode: null,
+  });
+
+  assert.match(html, /class="analysis-grid"/);
+  for (const label of ['Sentimento', 'Emoção', 'Intenção', 'Tópico', 'Entidade', 'Spam', 'Toxicidade', 'Potencial de engajamento', 'Confiança']) {
+    assert.ok(html.includes(label), `missing ${label}`);
+  }
+  assert.match(html, /Song/);
+  assert.match(html, /JEV · deterministic-test/);
+});

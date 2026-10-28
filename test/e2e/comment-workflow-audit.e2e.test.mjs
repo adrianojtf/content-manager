@@ -138,7 +138,7 @@ test('comment workflow HTTP sends the selected generated language variant when o
       sendTexts.push(text);
       return { platform: 'youtube', externalReplyId: 'external-reply-pt' };
     },
-  }, eventRepository, tenant, { generate: () => '60000000-0000-4000-8000-000000000006' }, () => Date.parse(createdAt));
+  }, eventRepository, tenant, { generate: () => '60000000-0000-4000-8000-000000000006' }, { execute: async () => false }, () => Date.parse(createdAt));
   const history = new ListCommentWorkflow(eventRepository, accounts, tenant, () => Date.parse(createdAt));
 
   await withApp({ corrections: { execute: async () => ({}) }, revisions: { execute: async () => ({}) }, sendReply, history }, async (baseUrl) => {
@@ -206,7 +206,7 @@ test('comment workflow runs edit, response evaluation, and one manual send throu
       sentTexts.push(text);
       return { platform: 'youtube', externalReplyId: 'external-reply-1' };
     },
-  }, eventRepository, tenant, { generate: () => '60000000-0000-4000-8000-000000000001' }, now);
+  }, eventRepository, tenant, { generate: () => '60000000-0000-4000-8000-000000000001' }, { execute: async () => false }, now);
   const history = new ListCommentWorkflow(eventRepository, accounts, tenant, now);
 
   await withApp({ corrections: { execute: async () => ({}) }, revisions, evaluateResponse, sendReply, history }, async (baseUrl) => {
@@ -291,7 +291,7 @@ test('creator can author, edit, and manually send a response without comment ana
   const sentTexts = [];
   const sendReply = new SendManualCommentReply(accounts, comments, {
     reply: async (_account, _comment, text) => { sentTexts.push(text); return { platform: 'youtube', externalReplyId: 'manual-reply-1' }; },
-  }, eventRepository, tenant, { generate: () => '60000000-0000-4000-8000-000000000005' }, now);
+  }, eventRepository, tenant, { generate: () => '60000000-0000-4000-8000-000000000005' }, { execute: async () => false }, now);
   const history = new ListCommentWorkflow(eventRepository, accounts, tenant, now);
 
   await withApp({
@@ -401,6 +401,7 @@ test('semi-automatic send-all uses the existing per-comment route for approved r
     eventRepository,
     tenant,
     { generate: () => `attempt-${++attemptNumber}` },
+    { execute: async () => false },
     () => Date.parse(recordedAt),
   );
   const history = new ListCommentWorkflow(eventRepository, accounts, tenant, () => Date.parse(recordedAt));

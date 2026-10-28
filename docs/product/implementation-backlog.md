@@ -5,7 +5,7 @@
 **Initial task state:** Todo. Update individual tasks to In Progress, Blocked, or Done as work proceeds. An epic dependency means its prerequisite capability is complete, including its E2E task, unless a task-level dependency allows earlier work.
 
 **Product index:** [MVP PRD](prd.md)  
-**Technical specs:** [Content](../specifications/technical-content-management.md) · [Publishing](../specifications/technical-social-publishing.md) · [Social content synchronization](../specifications/technical-social-content-synchronization.md) · [Analytics](../specifications/technical-analytics.md) · [Community](../specifications/technical-community-management.md) · [Intelligence](../specifications/technical-audience-intelligence.md) · [Localization](../specifications/internationalization.md)
+**Technical specs:** [Content](../specifications/technical-content-management.md) · [Publishing](../specifications/technical-social-publishing.md) · [Social content synchronization](../specifications/technical-social-content-synchronization.md) · [Analytics](../specifications/technical-analytics.md) · [Community](../specifications/technical-community-management.md) · [Response Refinement](../specifications/technical-response-refinement.md) · [Intelligence](../specifications/technical-audience-intelligence.md) · [Localization](../specifications/internationalization.md)
 
 ## Execution and Definition of Done
 
@@ -776,6 +776,21 @@ Exercise comment ingestion through evaluation and response decision with determi
 - [x] Manual reply attempts log the exact sent response version and external outcome; response evaluation is optional.
 
 **Depends on:** COM-02, COM-06, COM-07, COM-08, COM-09.
+
+### COM-15 — Implement the AI response refinement dataset
+
+**Status:** Done — migration `022_create_ai_response_edit_pairs`, the `ResponseRefinementPairRepository` port/Postgres adapter, the `RecordResponseRefinementPair` use case, and best-effort capture inside `SendManualCommentReply` are implemented; successful results carry the `refinementPairPersisted` flag.
+
+Persist an append-only anonymized record pairing the original AI-generated text with the exact sent text whenever a successful manual send dispatches a version edited from an AI suggestion. See the [Response Refinement PRD](prds/response-refinement.md) and [technical specification](../specifications/technical-response-refinement.md).
+
+**Acceptance criteria**
+
+- [x] A successful send of an edited AI suggestion appends exactly one pair record; unedited AI sends, creator-authored sends, and failed/unsupported/ambiguous sends create none.
+- [x] The record preserves platform, language, provider/model, confidence/rationale, tone snapshot, revision count, optional last edit reason, evaluation snapshot, and derived analysis labels.
+- [x] The record stores no audience identifiers, comment text, external IDs, or comment-scoped foreign keys, and survives the 30-day comment retention cascade.
+- [x] `manual_reply_attempt_id` uniqueness makes capture idempotent; capture failure never changes the send outcome.
+
+**Depends on:** COM-09, COM-11.
 
 ## EPIC AI — Audience and Content Intelligence
 
