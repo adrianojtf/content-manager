@@ -18,7 +18,7 @@ import enUS from '../../web/locales/en-US.mjs';
 import esES from '../../web/locales/es-ES.mjs';
 
 test('static UI labels and semantic keys used by the frontend resolve in the current catalog', () => {
-  const files = ['web/index.html', 'web/app.mjs', 'web/view.mjs'];
+  const files = ['web/index.html', 'web/app.mjs', 'web/view.mjs', 'web/dashboard.mjs', 'web/episode-review.mjs', 'web/sent-replies-report.mjs', 'web/analysis-visuals.mjs'];
   const source = files.map((file) => readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8')).join('\n');
   const keys = new Set([
     ...[...source.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)].map((match) => match[1]),

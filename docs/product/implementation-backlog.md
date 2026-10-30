@@ -21,13 +21,13 @@
 
 The dependency order below does not define product priority. Execute capabilities by these phases; do not pull later-phase features into Phase 1 without an explicit scope decision.
 
-1. **Phase 1 — Publications and manual replies:** controlled single-creator pilot; platform authorization/connected accounts; list existing publications and comments; generate and edit response suggestions; require an explicit manual send for every reply. Prioritize SOC-01, SOC-02 account/read workflows, the publication-listing task, COM-01–COM-10, and only the platform adapter work needed for read/reply. Do not expose a public multi-user service without product-user authentication. No dashboard or video upload/publishing.
-2. **Phase 2 — Dashboard:** deliver the manually fed Novelaria analytics dashboard (AN-01–AN-07). This is independent of social API integration; keep AN-08 deferred.
-3. **Phase 3 — Product-user authentication:** resume deployment OIDC and tenant administration (IAM-07, FND-04, IAM-06 and any blocked tenant-context integrations); enable multi-user/tenant access only after the required isolation and authorization journeys pass.
+1. **Phase 1 — Authenticated pilot, publications, and manual replies:** controlled single-creator deployment with a domain, trusted HTTPS, Auth0 login federated through Google, and VPN/source-IP restriction as defense-in-depth; platform authorization/connected accounts; list existing publications and comments; generate and edit response suggestions; require an explicit manual send for every reply. Prioritize IAM-07/IAM-08, SOC-01, SOC-02 account/read workflows, the publication-listing task, COM-01–COM-10, and only the platform adapter work needed for read/reply. Do not expose a public multi-user service or self-service registration. No dashboard or video upload/publishing.
+2. **Phase 2 — Dashboard:** deliver the Novelaria dashboard with AI-assisted episode suggestions from already-imported publications, creator approval, and manually fed performance data (AN-01–AN-07). Episode discovery does not add social API calls; keep future metric-provider integrations deferred.
+3. **Phase 3 — Multi-tenant identity and administration:** deliver tenant administration, membership management, and the platform-admin console (IAM-06, FND-04 and any blocked tenant-context integrations); enable multi-user/tenant access only after the required isolation and authorization journeys pass. The Phase 1 Auth0 pilot login is not public multi-tenant access.
 4. **Phase 4 — Video upload and publishing:** deliver CMS upload (CMS-03–CMS-04) and the video-publishing portions of SOC-01–SOC-07, after platform capability verification. Keep scheduling/retry only where separately specified and verified.
 5. **Future discovery — Vertical-drama streaming:** after consolidation of the earlier phases, assess a streaming product for vertical dramas and creator subscriptions by channel, playlist, or series/novel. This is feasibility research, not committed implementation scope.
 
-Platform OAuth and permission checks for social accounts are Phase 1 prerequisites and are not the deferred product-user authentication in Phase 3. Phase 1 is restricted to a controlled, single-creator pilot; it must not be made publicly accessible as a multi-user service.
+Platform OAuth and permission checks for social accounts are distinct from the Phase 1 product-user login. The remote Phase 1 deployment requires an authenticated, explicitly provisioned pilot identity; VPN/source-IP restriction is additional defense-in-depth. Phase 1 remains a controlled, single-creator pilot and must not be made publicly accessible as a multi-user service.
 
 ## EPIC FND — MVP Technical Foundation
 
@@ -158,23 +158,43 @@ Exercise authenticated tenant resolution and settings/content isolation with det
 
 ### IAM-07 — Configure Auth0 for deployment
 
-**Status:** Deferred to Phase 3 — Auth0 is selected and the environment config loader is implemented; deployment configuration and platform-admin bootstrap remain pending until product-user authentication is prioritized.
+**Status:** Required for the Phase 1 remote Docker deployment — Auth0 is selected and the environment config loader is implemented; provider configuration, the Google connection, exact callback URLs, and pilot-user bootstrap remain pending.
 
-Configure Auth0 as the managed OIDC provider. The application verifier remains provider-neutral and reads the issuer, API audience, and JWKS URI from runtime configuration. See the Auth0 setup instructions in the [README](../../README.md).
+Configure Auth0 as the managed OIDC provider and Google as its federated login connection. The application verifier remains provider-neutral and reads the issuer, API audience, and JWKS URI from runtime configuration. The API trusts Auth0-issued access tokens only; it does not accept Google tokens directly. See the Auth0 setup instructions in the [README](../../README.md).
 
 **Acceptance criteria**
 
 - [x] Auth0 supports the OIDC authorization-code flow with PKCE and signed JWT access tokens for a registered API audience.
 - [x] The application requires `OIDC_ISSUER`, `OIDC_AUDIENCE`, and `OIDC_JWKS_URI` at composition and defaults to `RS256`.
 - [x] Verifier tests cover issuer/audience/signature/expiry checks and reject insecure remote endpoints or unsupported signing algorithms without production credentials.
-- [ ] Deployment values are copied from the Auth0 tenant/API and OIDC discovery metadata; the Next.js application has exact allowed callback/logout origins.
-- [ ] The Next.js client secret/session secret is delivered through a secret manager and a first `PLATFORM_ADMIN` identity is provisioned through a controlled operator process.
+- [ ] The Auth0 API and Google connection are configured; the deployment uses the exact OIDC Discovery issuer/JWKS and registered API audience.
+- [ ] The Phase 1 BFF login has exact HTTPS callback/logout/web origins for its implemented routes; wildcard production callbacks are prohibited.
+- [ ] BFF client/session secrets are delivered server-side through the deployment secret mechanism, and the pre-provisioned pilot identity is mapped by `(issuer, subject)` to the pilot tenant.
 
 **Depends on:** IAM-01, IAM-02.
 
+### IAM-08 — Wire Auth0 pilot login into the deployed runtime
+
+**Status:** Todo — Phase 1 remote deployment gate. OIDC verification and guard foundations exist, but the production HTTP composition and CreatorDesk login are not wired.
+
+Connect Auth0 login to the current CreatorDesk web application through the same-origin NestJS BFF/session pattern in [ADR-008](../architecture/decisions/ADR-008-phase1-authenticated-session.md), and enforce the server-resolved principal on product APIs. Keep the reserved pilot tenant, but resolve access through the provisioned identity and membership rather than trusting caller-supplied tenant IDs. The Auth0 Google connection authenticates the creator; the application accepts Auth0-issued identity/access tokens and local `(issuer, subject)` membership.
+
+**Acceptance criteria**
+
+- [ ] The remote pilot uses OIDC authorization-code with PKCE and a secure callback/state/nonce flow; the browser receives only an opaque `Secure`, `HttpOnly`, `SameSite=Lax` session cookie and no OIDC tokens in `localStorage`.
+- [ ] Server-side sessions have expiration, revocation, and CSRF protection for state-changing requests; session state is persisted outside process memory.
+- [ ] The authorized Google identity is explicitly provisioned; unknown or inactive Auth0 identities and users without active pilot-tenant membership are denied.
+- [ ] Product API routes reject missing or invalid authentication; tenant context comes from the server-resolved principal. Static assets and any health endpoint expose no tenant data.
+- [ ] Social OAuth callbacks are protected by a single-use, short-lived state bound to the authenticated browser/user/tenant; a callback cannot connect an account to another tenant.
+- [ ] Login/logout use the configured HTTPS domain and exact Auth0 callback/logout origins. VPN/source-IP restrictions remain an additional network control.
+- [ ] Deterministic tests cover unauthenticated denial, valid pilot access, inactive/unknown identity denial, tenant isolation, logout/session expiry, and social OAuth callback state binding.
+- [ ] No test depends on a live Auth0 tenant, Google account, or social provider.
+
+**Depends on:** IAM-01, IAM-02, IAM-05, IAM-07, SOC-02, COM-03–COM-05, COM-12.
+
 ### FND-04 — Integrate localization with tenant/user context
 
-**Status:** Deferred to Phase 3 — tenant preferences, tenant-scoped Content persistence, and isolation foundations exist; request-context integration waits for deployed OIDC configuration.
+**Status:** Deferred to Phase 3 — tenant preferences, tenant-scoped Content persistence, and isolation foundations exist; request-context localization for the tenant-administration console remains later-phase work. Phase 1 OIDC request context is tracked in IAM-08.
 
 Wire the existing localization foundation into authenticated request context and product presentation. Reuse the existing locale/timezone resolution and catalog ports; do not add a second resolver.
 
@@ -185,7 +205,7 @@ Wire the existing localization foundation into authenticated request context and
 - [ ] API instants remain ISO 8601 with explicit offsets; presentation formatting uses the resolved locale/timezone without endpoint-specific locale query parameters.
 - [ ] Tests cover request-context resolution, tenant isolation, and deterministic formatting; any frontend in scope uses a localization facade.
 
-**Depends on:** FND-01, FND-02, FND-03, IAM-01, IAM-02, IAM-03, IAM-04, IAM-05, IAM-07.
+**Depends on:** FND-01, FND-02, FND-03, IAM-01, IAM-02, IAM-03, IAM-04, IAM-05, IAM-07, IAM-08.
 
 ### FND-05 — Localize the CreatorDesk interface to supported locales
 
@@ -220,7 +240,7 @@ Build a localized Next.js console for platform-admin tenant provisioning, tenant
 - [ ] The UI calls authenticated APIs and never treats a client-supplied tenant ID or client-side role check as authorization.
 - [ ] Tests cover access denial, tenant isolation, model/provider allowlisting, settings persistence, and secret non-disclosure with deterministic OIDC doubles.
 
-**Depends on:** IAM-02, IAM-03, IAM-05, IAM-07, FND-04.
+**Depends on:** IAM-02, IAM-03, IAM-05, IAM-07, IAM-08, FND-04.
 
 ## EPIC CMS — Content Management
 
@@ -427,43 +447,47 @@ Exercise the creator's multi-destination flow across the application with determ
 
 ### AN-01 — Finalize the Novelaria dashboard product contract
 
-**Status:** Done
+**Status:** In Progress — the PRD/tech contract and JEV classification foundation now describe episode suggestions from already-imported publications; suggestion persistence, creator review, and approval remain to be implemented. Performance metrics remain manually entered.
 
-Define the manually fed MVP: tenant-unique episode code and series identity; per-platform observations for TikTok, Instagram, and Facebook; historical reporting windows; metric formulas; BRL production economics and monthly revenue; dashboard answers and milestones. Keep API synchronization and YouTube entry out of this MVP. Update PRD and tech spec.
+Define tenant-scoped Series records with aliases and seasonal/non-seasonal mode; season-aware episode identity; AI-assisted episode suggestions from existing TikTok, Instagram, Facebook, and YouTube publication metadata; explicit creator approval; manual performance observations for TikTok, Instagram, and Facebook; historical reporting windows; metric formulas; BRL production economics and monthly revenue; dashboard answers and milestones. YouTube is a discovery source only; keep metric synchronization and YouTube performance entry out of this MVP. Update PRD, tech spec, and JEV capability rules.
 
 **Acceptance criteria**
 
-- [x] Episode identity, fields, manual source, MVP platforms, and distinction from Content/Publication/provider IDs are documented.
+- [x] Series/Episode identity, aliases, season mode, season-aware uniqueness, source publication references, approval boundary, manual-metric platforms, discovery platforms, and distinction from Content/Publication/provider IDs are documented.
 - [x] Observation history, missing-versus-zero behavior, reporting timezone, formulae, economics, and monthly milestone definitions are documented.
 - [x] The six primary dashboard questions and the required dashboard content are specified.
-- [x] TikTok manual analytics entry is explicitly separate from TikTok publishing/API support; YouTube dashboard entry is deferred.
+- [ ] JEV classification schema, confidence/evidence, trilingual rationale variants, deterministic grouping, and creator approval are verified against the configured provider.
+- [x] TikTok manual analytics entry is explicitly separate from TikTok publishing/API support; YouTube discovery is separate from deferred YouTube performance entry.
 
 ### AN-02 — Implement tenant-scoped episode and observation persistence
 
-**Status:** Blocked — account-follower snapshots reference `SocialAccount`; proceed after SOC-02 implements that model and its tenant-scoped persistence.
+**Status:** Done — migrations `023_create_episode_review.sql` and `024_create_analytics_entries.sql` persist tenant-scoped Series, season-aware Episodes with production economics, suggestion/decision lifecycle, approved publication links, TikTok/Instagram/Facebook performance observations, account follower snapshots, and monthly platform revenue.
 
-Persist the canonical episode, one-time production fields, dated platform observations, platform-account follower snapshots, and monthly platform revenue using the contracts in AN-01.
+Persist tenant-scoped Series records with aliases and season mode, season-aware Episodes, pending episode suggestions with references to imported tenant publications, creator decisions, one-time production fields, dated platform observations, platform-account follower snapshots, and monthly platform revenue using the contracts in AN-01.
 
 **Acceptance criteria**
 
-- [ ] Tests are written first for tenant-unique episode code, one episode linked to multiple platforms, observation identity/history, account-follower snapshots, and episode-level cost/time.
-- [ ] Persistence is tenant-scoped; a tenant cannot read or mutate another tenant's episode, observations, or revenue.
-- [ ] Duplicate observation submissions are idempotent; corrections target an observation identity without erasing unrelated history.
-- [ ] Integration tests cover persistence, unavailable-versus-zero, follower snapshots, and BRL structured amounts.
-- [ ] Dashboard episodes do not require a Content/Publication link; any later intelligence association is explicit and tenant-authorized, never inferred from the episode code.
+- [x] Tests are written first for tenant-unique Series identity, seasonal/non-seasonal constraints, season-aware episode identity/code, pending suggestion/source identity, creator-approved links to multiple platforms, observation identity/history, account-follower snapshots, and episode-level cost/time.
+- [x] Persistence is tenant-scoped; a tenant cannot read or mutate another tenant's episode, observations, or revenue.
+- [x] Duplicate observation submissions are idempotent; corrections target an observation identity without erasing unrelated history.
+- [x] Integration tests cover suggestion lifecycle and atomic approval, persistence, unavailable-versus-zero, follower snapshots, and BRL structured amounts.
+- [x] Dashboard episodes do not require a Content/Publication link; any later intelligence association is explicit and tenant-authorized, never inferred from the episode code.
 
 **Depends on:** AN-01, FND-01, IAM-04, SOC-02.
 
 ### AN-03 — Implement manual episode and analytics entry use cases
 
-Provide controlled single-creator pilot use cases to register/update episodes, record TikTok/Instagram/Facebook observations and account-follower snapshots, and record monthly platform revenue. Keep persistence tenant-scoped; do not expose these use cases publicly before Phase 3. No social APIs are called.
+**Status:** Done — episode review use cases plus the manual-entry use cases and `analytics-entry.controller.ts` cover Series/Episode registration, episode economics, performance observations, follower snapshots, and monthly revenue with server-resolved tenant/actor and whitelisted request bodies.
+
+Provide controlled single-creator pilot use cases to classify already-imported publication metadata, group exact series/season/episode identity matches as pending suggestions, approve/correct/reject/defer suggestions, manually register fallback Series and Episodes, record TikTok/Instagram/Facebook observations and account-follower snapshots, and record monthly platform revenue. Keep persistence tenant-scoped; do not expose these use cases publicly before Phase 3. Classification never calls social APIs and never mutates Series/Episodes without creator approval.
 
 **Acceptance criteria**
 
-- [ ] Tests are written first for episode registration, tenant-derived authorization, manual observation entry, follower snapshots, and revenue entry.
-- [ ] Episode code, series, episode number, publication date, platform, duration, metric values/units, and observation time are validated.
-- [ ] Missing optional metrics remain unavailable; negative or malformed values are rejected.
-- [ ] A creator can enter separate platform data for one episode without re-creating the episode.
+- [x] Tests are written first for JEV output validation, publication candidate classification, deterministic series/season/episode grouping, approval/rejection/deferral, tenant-derived authorization, manual observation entry, follower snapshots, and revenue entry.
+- [x] Series mode, episode/season numbers, code, publication date, platform, duration, metric values/units, and observation time are validated.
+- [x] Missing optional metrics remain unavailable; negative or malformed values are rejected.
+- [x] A creator can enter separate platform data for one episode without re-creating the episode.
+- [x] JEV failure, uncertainty, or missing series/season/episode identity fields leave a reviewable candidate and do not create/link canonical records.
 
 **Depends on:** AN-02. Use only the controlled single-creator pilot context until Phase 3 auth is complete; tenant scoping remains mandatory.
 
@@ -483,11 +507,14 @@ Build tenant-scoped queries for period totals, platform/series/episode rankings 
 
 ### AN-05 — Build the prioritized Novelaria dashboard
 
-Present the six decision answers, headline metrics, platform growth, rankings/trends, and monthly goal progress together in the primary dashboard view.
+Build the Episodes review queue for pending suggestions and present the six decision answers, headline metrics, platform growth, rankings/trends, and monthly goal progress together in the primary dashboard view.
+
+**Status:** In Progress — responsive, localized dashboard entry screen and JEV classification/grouping foundation are implemented; suggestion persistence/review and analytics reporting remain pending.
 
 **Acceptance criteria**
 
 - [ ] The first view answers: overall growth; growing platform; top series; top episode; follower conversion relative to views; and progress toward monetization milestones.
+- [ ] An Episodes screen lists pending suggestions segmented by Series, season, and episode with source platform links, imported title/description evidence, classification/confidence, and localized rationale variants; creator approve/correct/remove/reject/defer actions are explicit.
 - [ ] It includes 7/30/90-day views, month-over-month growth, total/new followers, platform-separated views/growth, episode/series rankings, and series trends.
 - [ ] It distinguishes zero, unavailable, incomplete history, and not-yet-monetized values and identifies each reporting window.
 - [ ] In a task-based usability check, at least 4 of 5 representative creators answer all six questions within 10 seconds each, without assistance.
@@ -510,11 +537,12 @@ Expose episode-level production cost/time, per-platform monthly revenue, cost-ve
 
 ### AN-07 — Verify the analytics dashboard E2E journey
 
-Exercise manual registration through the dashboard using deterministic authentication and persistence doubles.
+Exercise imported-publication suggestion review and approval through the dashboard using deterministic JEV, authentication, and persistence doubles.
 
 **Acceptance criteria**
 
-- [ ] One episode is registered once and receives separate TikTok, Instagram, and Facebook observations.
+- [ ] Publications from TikTok, Instagram, Facebook, and YouTube are classified from imported metadata without additional social API calls; approved source IDs and Series/season/Episode identity remain preserved.
+- [ ] One episode is created only after explicit approval and receives separate TikTok, Instagram, and Facebook observations; YouTube analytics entry remains unavailable.
 - [ ] Dashboard totals, platform breakdown, rankings, conversion, economics, and milestones match deterministic fixtures.
 - [ ] Tenant isolation, missing metrics, zero denominators, and insufficient observation history are covered.
 - [ ] The journey performs no production social API calls and does not require API credentials.
@@ -523,7 +551,7 @@ Exercise manual registration through the dashboard using deterministic authentic
 
 ### AN-08 — Add future provider analytics integrations
 
-**Status:** Blocked — outside the manually fed Novelaria dashboard MVP; revisit after explicit scope approval.
+**Status:** Blocked — automated performance metric collection remains outside the Novelaria dashboard MVP; revisit after explicit scope approval.
 
 Add verified official metric integrations independently per platform, including YouTube only after the dashboard scope is extended. Manual data entry must remain available if an API is unsupported or fails.
 

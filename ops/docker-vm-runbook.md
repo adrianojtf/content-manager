@@ -5,13 +5,17 @@ This runbook deploys the current modular monolith on one Linux VM. It is for a r
 ## 1. Prepare the VM
 
 - Create a supported Linux VM with Docker Engine and the Docker Compose plugin.
-- Point the chosen DNS name to the VM before requesting a certificate.
+- Point the chosen domain to the VM before requesting a certificate. Set the same hostname in `caddy.env`; Caddy obtains and renews a trusted certificate. Verify the public certificate and renewal path before onboarding the pilot creator.
 - Restrict SSH to operator access. Configure ingress so the required ACME challenge can reach Caddy on port 80 while application traffic on port 443 remains behind the trusted access boundary. If the selected access boundary blocks HTTP-01 validation or renewal, select and test a compatible DNS challenge or managed access-proxy approach before deployment. Do not expose PostgreSQL.
 - Create `/etc/content-manager/` and copy the four `ops/docker-vm-*.env.example` files there as `compose.env`, `app.env`, `postgres.env`, and `caddy.env`.
-- Replace all example values. Use a URL-safe random database password in both `app.env` and `postgres.env`; copy any required social-provider variables from the root `.env.example` into `app.env`. Store the credential-encryption key separately from database backups.
+- Replace all example values. Use a URL-safe random database password in both `app.env` and `postgres.env`; copy any required social-provider variables from the root `.env.example` into `app.env`. Configure Auth0 OIDC values and keep the client/session secrets server-side. Configure Google as a federated connection in Auth0; Google client credentials belong in the Auth0 connection, not this application file.
+- Register only the exact HTTPS callback, logout, and web-origin URLs produced by the implemented login/session flow. Do not invent callback paths or use wildcard production origins. Provision the pilot Google identity in Auth0 and map its Auth0 `(issuer, subject)` to the local pilot user/membership; do not auto-provision users based only on email.
+- Keep VPN/source-IP restrictions enabled as an additional access boundary. They do not replace Auth0 login.
 - Set the environment files to owner-only read/write access. Keep them outside the repository.
 
 ## 2. Validate and start
+
+**Deployment gate:** the current application composition does not yet wire the OIDC module or protect its product routes. Do not run the public VM deployment commands until the Auth0 login, route guards, identity/tenant resolution, and social OAuth callback handling described by IAM-08 are implemented and tested.
 
 Run these commands from the repository root on the VM:
 
@@ -46,9 +50,9 @@ The first command uses the repository Dockerfile. For later releases, record the
 
 ## 3. Access and OAuth
 
-- Caddy terminates TLS and forwards requests to the private API container. Caddy does not authenticate users.
-- Keep the trusted-network firewall rule in place. The application still uses the local pilot tenant and does not have product-user authentication wired into the production HTTP composition.
-- Test each social-provider OAuth round-trip from a browser connected to the allowed network. The provider redirects the browser to the registered callback URL.
+- Caddy terminates TLS and forwards requests to the private API container. Caddy does not authenticate users; the application must complete the Auth0 login and API authorization flow.
+- Verify Google sign-in through Auth0, API rejection of unauthenticated requests, successful access for the provisioned pilot identity, and tenant scoping before enabling the deployment.
+- Test each social-provider OAuth round-trip from an authenticated browser connected to the VPN/allowlist. Callback state must be single-use and bound to the authenticated user and tenant.
 - The application binds to `0.0.0.0` only inside the Docker network in this Compose deployment. The API port is not published on the VM host.
 - OAuth state is currently process-local. A VM restart can invalidate an in-progress authorization flow; complete or restart such a flow after maintenance.
 

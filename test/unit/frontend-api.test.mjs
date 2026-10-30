@@ -7,6 +7,8 @@ function jsonResponse(body, status = 200) {
     ok: status >= 200 && status < 300,
     status,
     json: async () => body,
+    blob: async () => new Blob([JSON.stringify(body)]),
+    headers: { get: (name) => name.toLowerCase() === 'content-disposition' ? 'attachment; filename="sent-replies.csv"' : null },
   };
 }
 
@@ -49,6 +51,35 @@ test('comment summary request hits the tenant-wide summary route', async () => {
 
   assert.deepEqual(await api.getCommentSummary(), summary);
   assert.deepEqual(calls.map(([url]) => url), ['http://127.0.0.1:3000/social/comments/summary']);
+});
+
+test('sent-replies report serializes filters and CSV export targets the full filtered result', async () => {
+  const calls = [];
+  const api = new CreatorDeskApi({
+    baseUrl: 'http://127.0.0.1:3000',
+    fetcher: async (url, options) => {
+      calls.push([url, options]);
+      return jsonResponse({ items: [], total: 0, nextCursor: null });
+    },
+  });
+  const filters = {
+    from: '2026-10-01T00:00:00.000Z',
+    to: '2026-10-28T12:00:00.000Z',
+    platform: 'youtube',
+    accountId: 'account/1',
+    search: 'comment & reply',
+  };
+
+  const result = await api.getSentRepliesReport({ ...filters, cursor: 'opaque cursor', pageSize: 10 });
+  const csvUrl = api.sentRepliesReportCsvUrl(filters);
+  const download = await api.downloadSentRepliesReportCsv(filters);
+
+  assert.deepEqual(result, { items: [], total: 0, nextCursor: null });
+  assert.equal(calls[0][0], 'http://127.0.0.1:3000/social/replies/report?from=2026-10-01T00%3A00%3A00.000Z&to=2026-10-28T12%3A00%3A00.000Z&platform=youtube&accountId=account%2F1&search=comment+%26+reply&cursor=opaque+cursor&pageSize=10');
+  assert.equal(csvUrl, 'http://127.0.0.1:3000/social/replies/report.csv?from=2026-10-01T00%3A00%3A00.000Z&to=2026-10-28T12%3A00%3A00.000Z&platform=youtube&accountId=account%2F1&search=comment+%26+reply');
+  assert.equal(download.filename, 'sent-replies.csv');
+  assert.equal(await download.blob.text(), JSON.stringify(result));
+  assert.deepEqual(calls[1][1], { method: 'GET', credentials: 'same-origin' });
 });
 
 test('publication listing defaults to a five-video page', async () => {
@@ -292,6 +323,87 @@ test('Facebook Page selection sends only the selected candidate and transient se
   assert.equal(calls[0][0], '/social/connections/facebook/select');
   assert.equal(calls[0][1].method, 'POST');
   assert.deepEqual(JSON.parse(calls[0][1].body), { selectionId: 'selection-1', pageId: 'page-3' });
+});
+
+test('episode review API refreshes imported metadata and sends only creator review decisions', async () => {
+  const calls = [];
+  const api = new CreatorDeskApi({
+    fetcher: async (url, options) => {
+      calls.push([url, options]);
+      return jsonResponse({ ok: true });
+    },
+  });
+
+  await api.getEpisodeReview();
+  await api.getEpisodeReview('SERIES');
+  await api.refreshEpisodeSuggestions();
+  await api.confirmEpisodeSetupSeries({
+    suggestionIds: ['suggestion-1', 'suggestion-2'],
+    newSeries: { name: 'FQA', aliases: ['Fiction Quest'], seasonMode: 'SEASONAL' },
+  });
+  await api.confirmEpisodeSetupSeasons({ suggestionIds: ['suggestion-1', 'suggestion-2'], seasonNumber: 2 });
+  await api.approveEpisodeSuggestionGroup({
+    suggestionIds: ['suggestion-1'],
+    newSeries: { name: 'FQA', aliases: [], seasonMode: 'SEASONAL' },
+    seasonNumber: 2,
+    episodeNumber: 8,
+    episodeCode: 'FQA-S02-E08',
+  });
+  await api.decideEpisodeSuggestions(['suggestion-2'], 'DEFERRED');
+
+  assert.deepEqual(calls.map(([url, options]) => [url, options.method, options.body]), [
+    ['/analytics/episodes/review', 'GET', undefined],
+    ['/analytics/episodes/review?stage=SERIES', 'GET', undefined],
+    ['/analytics/episodes/review/refresh', 'POST', undefined],
+    ['/analytics/episodes/setup/series/confirm', 'POST', JSON.stringify({
+      suggestionIds: ['suggestion-1', 'suggestion-2'],
+      newSeries: { name: 'FQA', aliases: ['Fiction Quest'], seasonMode: 'SEASONAL' },
+    })],
+    ['/analytics/episodes/setup/seasons/confirm', 'POST', JSON.stringify({
+      suggestionIds: ['suggestion-1', 'suggestion-2'],
+      seasonNumber: 2,
+    })],
+    ['/analytics/episodes/review/approve', 'POST', JSON.stringify({
+      suggestionIds: ['suggestion-1'],
+      newSeries: { name: 'FQA', aliases: [], seasonMode: 'SEASONAL' },
+      seasonNumber: 2,
+      episodeNumber: 8,
+      episodeCode: 'FQA-S02-E08',
+    })],
+    ['/analytics/episodes/review/decision', 'POST', JSON.stringify({ suggestionIds: ['suggestion-2'], decision: 'DEFERRED' })],
+  ]);
+});
+
+test('manual episode API creates series, loads local unlinked publications, and submits selected sources', async () => {
+  const calls = [];
+  const api = new CreatorDeskApi({
+    fetcher: async (url, options) => {
+      calls.push([url, options]);
+      return jsonResponse({ ok: true });
+    },
+  });
+  const episodeInput = {
+    seriesId: 'series-1',
+    seasonNumber: 2,
+    episodeNumber: 20,
+    episodeCode: 'OBS-S02-E20',
+    productionCost: null,
+    productionTimeSeconds: null,
+    publicationSelections: [
+      { socialAccountId: 'account-ig', externalPublicationId: 'ig-20' },
+      { socialAccountId: 'account-yt', externalPublicationId: 'yt-20' },
+    ],
+  };
+
+  await api.createAnalyticsSeries({ name: 'Obsidiana', aliases: [], seasonMode: 'SEASONAL' });
+  await api.getAvailableEpisodePublications('instagram');
+  await api.createManualAnalyticsEpisode(episodeInput);
+
+  assert.deepEqual(calls.map(([url, options]) => [url, options.method, options.body]), [
+    ['/analytics/series', 'POST', JSON.stringify({ name: 'Obsidiana', aliases: [], seasonMode: 'SEASONAL' })],
+    ['/analytics/episodes/manual/publications?platform=instagram', 'GET', undefined],
+    ['/analytics/episodes/manual', 'POST', JSON.stringify(episodeInput)],
+  ]);
 });
 
 test('API errors preserve only stable code/status for presentation', async () => {

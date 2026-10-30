@@ -8,7 +8,7 @@ Hexagonal Architecture with a Modular Monolith deployment model.
 
 ```mermaid
 flowchart TB
-    UI[Next.js]
+    UI[CreatorDesk web UI]
     API[NestJS API]
 
     APP[Application / Use Cases]
@@ -36,6 +36,8 @@ flowchart TB
     PORTS --> SOCIAL
     PORTS --> JEV
 ```
+
+The current pilot UI is static browser assets served by the NestJS application. The Next.js administration console remains a later-phase presentation adapter; it is not required for the Phase 1 Auth0 BFF.
 
 ## 3. Dependency Rule
 

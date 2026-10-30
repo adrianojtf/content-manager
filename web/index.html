@@ -23,9 +23,11 @@
         <div class="nav-group">
           <p class="nav-label" data-i18n="nav.workspace"></p>
           <nav class="nav-list">
-            <a href="#" aria-disabled="true"><span aria-hidden="true">▦</span><span data-i18n="nav.overview"></span></a>
+            <a class="active" href="#dashboard" data-view="dashboard" aria-current="page"><span aria-hidden="true">▦</span><span data-i18n="nav.overview"></span></a>
+            <a href="#episodes" data-view="episodes"><span aria-hidden="true">▤</span><span data-i18n="episodes.title"></span></a>
             <a href="#" aria-disabled="true"><span aria-hidden="true">▣</span><span data-i18n="nav.content"></span></a>
-            <a class="active" href="#comments" data-view="comments" aria-current="page"><span aria-hidden="true">☷</span><span data-i18n="nav.comments"></span></a>
+            <a href="#comments" data-view="comments"><span aria-hidden="true">☷</span><span data-i18n="nav.comments"></span></a>
+            <a href="#replies-report" data-view="replies-report"><span aria-hidden="true">↗</span><span data-i18n="nav.repliesReport"></span></a>
             <a href="#" aria-disabled="true"><span aria-hidden="true">◷</span><span data-i18n="nav.schedule"></span></a>
             <a href="#" aria-disabled="true"><span aria-hidden="true">◈</span><span data-i18n="nav.analytics"></span></a>
           </nav>
@@ -46,7 +48,10 @@
         <header class="topbar">
           <div class="breadcrumb"><span data-i18n="app.breadcrumb"></span> <span>/</span> <strong id="breadcrumbCurrent" data-i18n="app.pageTitle"></strong></div>
           <div class="top-actions">
+            <a class="button small mobile-dashboard-link" href="#dashboard" data-view="dashboard"><span aria-hidden="true">▦</span><span data-i18n="nav.overview"></span></a>
+            <a class="button small mobile-episodes-link" href="#episodes" data-view="episodes"><span aria-hidden="true">▤</span><span data-i18n="episodes.title"></span></a>
             <a class="button small mobile-comments-link" href="#comments" data-view="comments"><span aria-hidden="true">☷</span><span data-i18n="nav.comments"></span></a>
+            <a class="button small mobile-report-link" href="#replies-report" data-view="replies-report"><span aria-hidden="true">↗</span><span data-i18n="nav.repliesReport"></span></a>
             <a class="button small mobile-settings-link" href="#connections" data-view="connections"><span aria-hidden="true">◎</span><span data-i18n="nav.connectedNetworks"></span></a>
             <div class="global-font-settings">
               <button class="button small global-font-settings-toggle" id="globalFontSettingsToggle" type="button" data-action="toggle-global-font-settings" aria-controls="globalFontSettingsPanel" aria-expanded="false" data-i18n-aria-label="settings.fontSettingsAria">
@@ -70,6 +75,8 @@
         </header>
 
         <div class="page-content">
+          <section id="dashboardScreen" class="dashboard-screen" hidden data-i18n-aria-label="nav.overview" aria-live="polite"></section>
+          <section id="episodesScreen" class="episodes-screen" hidden data-i18n-aria-label="episodes.title" aria-live="polite"></section>
           <section id="commentsScreen">
           <section class="page-heading">
             <div>
@@ -201,6 +208,50 @@
               <span id="connectedAccountCount" class="profile-count"></span>
             </div>
             <div id="connectedAccounts" class="settings-content" aria-live="polite"></div>
+          </section>
+          <section id="repliesReportScreen" class="replies-report-screen" hidden aria-labelledby="repliesReportHeading">
+            <header class="page-heading">
+              <div>
+                <p class="eyebrow" data-i18n="report.eyebrow"></p>
+                <h1 id="repliesReportHeading" data-i18n="report.title"></h1>
+                <p class="subtitle" data-i18n="report.subtitle"></p>
+              </div>
+              <button id="repliesReportCsv" class="button primary report-export" type="button" data-i18n="report.exportCsv"></button>
+            </header>
+            <section class="panel report-panel" data-i18n-aria-label="nav.repliesReport">
+              <form id="repliesReportFilters" class="report-filters">
+                <label class="field" for="repliesReportFrom">
+                  <span data-i18n="report.from"></span>
+                  <input id="repliesReportFrom" name="from" type="date" required />
+                </label>
+                <label class="field" for="repliesReportTo">
+                  <span data-i18n="report.to"></span>
+                  <input id="repliesReportTo" name="to" type="date" required />
+                </label>
+                <label class="field" for="repliesReportPlatform">
+                  <span data-i18n="report.platform"></span>
+                  <select id="repliesReportPlatform" name="platform">
+                    <option value="" data-i18n="report.allPlatforms"></option>
+                    <option value="instagram" data-i18n="network.instagram"></option>
+                    <option value="facebook" data-i18n="network.facebook"></option>
+                    <option value="tiktok" data-i18n="network.tiktok"></option>
+                    <option value="youtube" data-i18n="network.youtube"></option>
+                  </select>
+                </label>
+                <label class="field" for="repliesReportAccount">
+                  <span data-i18n="report.account"></span>
+                  <select id="repliesReportAccount" name="accountId">
+                    <option value="" data-i18n="report.allAccounts"></option>
+                  </select>
+                </label>
+                <label class="field report-search-field" for="repliesReportSearch">
+                  <span data-i18n="report.searchLabel"></span>
+                  <input id="repliesReportSearch" name="search" type="search" maxlength="200" data-i18n-placeholder="report.search" />
+                </label>
+                <button class="button primary report-filter-submit" type="submit" data-i18n="report.applyFilters"></button>
+              </form>
+              <div id="repliesReportResults" class="replies-report-results" aria-live="polite" aria-busy="false"></div>
+            </section>
           </section>
         </div>
       </main>

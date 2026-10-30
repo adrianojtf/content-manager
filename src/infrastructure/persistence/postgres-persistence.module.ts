@@ -8,6 +8,9 @@ import type { SocialPublicationReader } from '../../application/ports/social-pub
 import type { SocialPublicationRepository } from '../../application/ports/social-publication-repository.port';
 import type { SocialCommentLiker, SocialCommentReader, SocialCommentResponder, SocialCommentResponderRegistry } from '../../application/ports/social-comment.port';
 import type { SocialCommentRepository } from '../../application/ports/social-comment-repository.port';
+import type { SentReplyReportRepository } from '../../application/ports/sent-reply-report.repository.port';
+import type { EpisodeReviewRepository } from '../../application/ports/episode-review.repository.port';
+import type { AnalyticsEntryRepository } from '../../application/ports/analytics-entry.repository.port';
 import type { CommentWorkflowEventRepository } from '../../application/ports/comment-workflow-event-repository.port';
 import type { ResponseRefinementPairRepository } from '../../application/ports/response-refinement-pair-repository.port';
 import type { CommentEvaluator } from '../../application/ports/comment-evaluator.port';
@@ -39,6 +42,25 @@ import { DisconnectSocialAccount } from '../../application/social/disconnect-soc
 import { ListSocialPublications, type SocialPublicationReaderRegistry } from '../../application/social/list-social-publications';
 import { ListPublicationComments, SyncPublicationComments, type SocialCommentReaderRegistry } from '../../application/social/sync-publication-comments';
 import { GetCommentSummary } from '../../application/social/comment-summary';
+import { ListSentRepliesReport } from '../../application/social/list-sent-replies-report';
+import {
+  ApproveEpisodeSuggestionGroup,
+  ConfirmEpisodeSetupSeasons,
+  ConfirmEpisodeSetupSeries,
+  DecideEpisodeSuggestions,
+  GetEpisodeReview,
+  RefreshEpisodeSuggestions,
+} from '../../application/analytics/episode-review.usecases';
+import {
+  CreateAnalyticsEpisode,
+  CreateAnalyticsSeries,
+  CreateManualAnalyticsEpisode,
+  ListAvailableEpisodePublications,
+  UpdateAnalyticsEpisodeEconomics,
+  UpsertAnalyticsFollowerSnapshot,
+  UpsertAnalyticsMonthlyRevenue,
+  UpsertAnalyticsPerformanceObservation,
+} from '../../application/analytics/analytics-entry.usecases';
 import { SetCommentLike } from '../../application/social/set-comment-like';
 import { EvaluateComment, EvaluateResponseSuggestion, GenerateCommentResponseSuggestion } from '../../application/social/comment-intelligence.usecases';
 import { SendManualCommentReply } from '../../application/social/send-manual-comment-reply';
@@ -63,6 +85,9 @@ import { PostgresSocialAccountDisconnector } from './postgres-social-account-dis
 import { PostgresSocialPublicationRepository } from './postgres-social-publication.repository';
 import { PostgresSocialCredentialVault } from './postgres-social-credential-vault';
 import { PostgresSocialCommentRepository } from './postgres-social-comment.repository';
+import { PostgresSentReplyReportRepository } from './postgres-sent-reply-report.repository';
+import { PostgresEpisodeReviewRepository } from './postgres-episode-review.repository';
+import { PostgresAnalyticsEntryRepository } from './postgres-analytics-entry.repository';
 import { PostgresCommentWorkflowEventRepository } from './postgres-comment-workflow-event.repository';
 import { PostgresResponseRefinementPairRepository } from './postgres-response-refinement-pair.repository';
 import { PostgresResponseGenerationSettingsRepository } from './postgres-response-generation-settings.repository';
@@ -99,9 +124,11 @@ import { InstagramPublicationReader } from '../social/instagram-publication-read
 import { FacebookPagesPublicationReader } from '../social/facebook-pages-publication-reader';
 import { JevCommentEvaluator } from '../intelligence/jev-comment-evaluator';
 import { JevResponseEvaluator } from '../intelligence/jev-response-evaluator';
+import { JevPublicationEpisodeClassifier } from '../intelligence/jev-publication-episode-classifier';
 import { TypeSafeSystemOneClient } from '../intelligence/typesafe-system-one.client';
 import { GeminiFlashLiteResponseSuggestionGenerator } from '../intelligence/gemini-flash-lite-response-suggestion-generator';
 import { OpenAIGpt6LunaResponseSuggestionGenerator } from '../intelligence/openai-gpt-6-luna-response-suggestion-generator';
+import { JsonLocalizationAdapter } from '../localization/json-localization.adapter';
 import { createPostgresPool, PostgresPersistenceAdapter } from './postgres-persistence.adapter';
 
 const POSTGRES_POOL = Symbol('POSTGRES_POOL');
@@ -109,6 +136,8 @@ export const RELATIONAL_DATABASE = Symbol('RELATIONAL_DATABASE');
 export const SOCIAL_ACCOUNT_REPOSITORY = Symbol('SOCIAL_ACCOUNT_REPOSITORY');
 export const SOCIAL_ACCOUNT_DISCONNECTOR = Symbol('SOCIAL_ACCOUNT_DISCONNECTOR');
 export const SOCIAL_PUBLICATION_REPOSITORY = Symbol('SOCIAL_PUBLICATION_REPOSITORY');
+export const EPISODE_REVIEW_REPOSITORY = Symbol('EPISODE_REVIEW_REPOSITORY');
+export const ANALYTICS_ENTRY_REPOSITORY = Symbol('ANALYTICS_ENTRY_REPOSITORY');
 export const SOCIAL_CREDENTIAL_VAULT = Symbol('SOCIAL_CREDENTIAL_VAULT');
 export const SOCIAL_PUBLICATION_READERS = Symbol('SOCIAL_PUBLICATION_READERS');
 export const YOUTUBE_ACCOUNT_CREDENTIAL_PROVIDER = Symbol('YOUTUBE_ACCOUNT_CREDENTIAL_PROVIDER');
@@ -116,6 +145,7 @@ export const SOCIAL_COMMENT_READER = Symbol('SOCIAL_COMMENT_READER');
 export const SOCIAL_COMMENT_RESPONDER = Symbol('SOCIAL_COMMENT_RESPONDER');
 export const SOCIAL_COMMENT_LIKER = Symbol('SOCIAL_COMMENT_LIKER');
 export const SOCIAL_COMMENT_REPOSITORY = Symbol('SOCIAL_COMMENT_REPOSITORY');
+export const SENT_REPLY_REPORT_REPOSITORY = Symbol('SENT_REPLY_REPORT_REPOSITORY');
 export const SOCIAL_COMMENT_READERS = Symbol('SOCIAL_COMMENT_READERS');
 export const COMMENT_WORKFLOW_EVENT_REPOSITORY = Symbol('COMMENT_WORKFLOW_EVENT_REPOSITORY');
 export const RESPONSE_REFINEMENT_PAIR_REPOSITORY = Symbol('RESPONSE_REFINEMENT_PAIR_REPOSITORY');
@@ -194,8 +224,29 @@ export class PostgresPersistenceModule {
           inject: [RELATIONAL_DATABASE],
         },
         {
+          provide: EPISODE_REVIEW_REPOSITORY,
+          useFactory: (database: RelationalDatabase): EpisodeReviewRepository => new PostgresEpisodeReviewRepository(database),
+          inject: [RELATIONAL_DATABASE],
+        },
+        {
+          provide: ANALYTICS_ENTRY_REPOSITORY,
+          useFactory: (database: RelationalDatabase): AnalyticsEntryRepository => new PostgresAnalyticsEntryRepository(database),
+          inject: [RELATIONAL_DATABASE],
+        },
+        { provide: JsonLocalizationAdapter, useFactory: () => new JsonLocalizationAdapter() },
+        {
+          provide: JevPublicationEpisodeClassifier,
+          useFactory: (client: TypeSafeSystemOneClient) => new JevPublicationEpisodeClassifier(client),
+          inject: [TypeSafeSystemOneClient],
+        },
+        {
           provide: SOCIAL_COMMENT_REPOSITORY,
           useFactory: (database: RelationalDatabase): SocialCommentRepository => new PostgresSocialCommentRepository(database),
+          inject: [RELATIONAL_DATABASE],
+        },
+        {
+          provide: SENT_REPLY_REPORT_REPOSITORY,
+          useFactory: (database: RelationalDatabase): SentReplyReportRepository => new PostgresSentReplyReportRepository(database),
           inject: [RELATIONAL_DATABASE],
         },
         {
@@ -460,6 +511,76 @@ export class PostgresPersistenceModule {
           inject: [SOCIAL_ACCOUNT_REPOSITORY, LocalPilotTenantContext, SOCIAL_PUBLICATION_READERS, SOCIAL_PUBLICATION_REPOSITORY],
         },
         {
+          provide: RefreshEpisodeSuggestions,
+          useFactory: (accounts: SocialAccountRepository, publications: SocialPublicationRepository, reviews: EpisodeReviewRepository, classifier: JevPublicationEpisodeClassifier, localization: JsonLocalizationAdapter, tenant: LocalPilotTenantContext) => new RefreshEpisodeSuggestions(accounts, publications, reviews, classifier, localization, tenant),
+          inject: [SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_PUBLICATION_REPOSITORY, EPISODE_REVIEW_REPOSITORY, JevPublicationEpisodeClassifier, JsonLocalizationAdapter, LocalPilotTenantContext],
+        },
+        {
+          provide: GetEpisodeReview,
+          useFactory: (reviews: EpisodeReviewRepository, tenant: LocalPilotTenantContext) => new GetEpisodeReview(reviews, tenant),
+          inject: [EPISODE_REVIEW_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: ConfirmEpisodeSetupSeries,
+          useFactory: (reviews: EpisodeReviewRepository, tenant: LocalPilotTenantContext) => new ConfirmEpisodeSetupSeries(reviews, tenant),
+          inject: [EPISODE_REVIEW_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: ConfirmEpisodeSetupSeasons,
+          useFactory: (reviews: EpisodeReviewRepository, tenant: LocalPilotTenantContext) => new ConfirmEpisodeSetupSeasons(reviews, tenant),
+          inject: [EPISODE_REVIEW_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: ApproveEpisodeSuggestionGroup,
+          useFactory: (reviews: EpisodeReviewRepository, tenant: LocalPilotTenantContext) => new ApproveEpisodeSuggestionGroup(reviews, tenant),
+          inject: [EPISODE_REVIEW_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: DecideEpisodeSuggestions,
+          useFactory: (reviews: EpisodeReviewRepository, tenant: LocalPilotTenantContext) => new DecideEpisodeSuggestions(reviews, tenant),
+          inject: [EPISODE_REVIEW_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: CreateAnalyticsSeries,
+          useFactory: (entries: AnalyticsEntryRepository, tenant: LocalPilotTenantContext) => new CreateAnalyticsSeries(entries, tenant),
+          inject: [ANALYTICS_ENTRY_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: CreateAnalyticsEpisode,
+          useFactory: (entries: AnalyticsEntryRepository, tenant: LocalPilotTenantContext) => new CreateAnalyticsEpisode(entries, tenant),
+          inject: [ANALYTICS_ENTRY_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: CreateManualAnalyticsEpisode,
+          useFactory: (entries: AnalyticsEntryRepository, tenant: LocalPilotTenantContext) => new CreateManualAnalyticsEpisode(entries, tenant),
+          inject: [ANALYTICS_ENTRY_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: ListAvailableEpisodePublications,
+          useFactory: (entries: AnalyticsEntryRepository, tenant: LocalPilotTenantContext) => new ListAvailableEpisodePublications(entries, tenant),
+          inject: [ANALYTICS_ENTRY_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: UpdateAnalyticsEpisodeEconomics,
+          useFactory: (entries: AnalyticsEntryRepository, tenant: LocalPilotTenantContext) => new UpdateAnalyticsEpisodeEconomics(entries, tenant),
+          inject: [ANALYTICS_ENTRY_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: UpsertAnalyticsPerformanceObservation,
+          useFactory: (entries: AnalyticsEntryRepository, tenant: LocalPilotTenantContext) => new UpsertAnalyticsPerformanceObservation(entries, tenant),
+          inject: [ANALYTICS_ENTRY_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: UpsertAnalyticsFollowerSnapshot,
+          useFactory: (entries: AnalyticsEntryRepository, tenant: LocalPilotTenantContext) => new UpsertAnalyticsFollowerSnapshot(entries, tenant),
+          inject: [ANALYTICS_ENTRY_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: UpsertAnalyticsMonthlyRevenue,
+          useFactory: (entries: AnalyticsEntryRepository, tenant: LocalPilotTenantContext) => new UpsertAnalyticsMonthlyRevenue(entries, tenant),
+          inject: [ANALYTICS_ENTRY_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
           provide: SyncPublicationComments,
           useFactory: (accounts: SocialAccountRepository, comments: SocialCommentRepository, events: CommentWorkflowEventRepository, tenant: LocalPilotTenantContext, readers: SocialCommentReaderRegistry) => new SyncPublicationComments(accounts, comments, events, tenant, readers),
           inject: [SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_COMMENT_REPOSITORY, COMMENT_WORKFLOW_EVENT_REPOSITORY, LocalPilotTenantContext, SOCIAL_COMMENT_READERS],
@@ -473,6 +594,11 @@ export class PostgresPersistenceModule {
           provide: GetCommentSummary,
           useFactory: (comments: SocialCommentRepository, tenant: LocalPilotTenantContext) => new GetCommentSummary(comments, tenant),
           inject: [SOCIAL_COMMENT_REPOSITORY, LocalPilotTenantContext],
+        },
+        {
+          provide: ListSentRepliesReport,
+          useFactory: (reports: SentReplyReportRepository, tenant: LocalPilotTenantContext) => new ListSentRepliesReport(reports, tenant),
+          inject: [SENT_REPLY_REPORT_REPOSITORY, LocalPilotTenantContext],
         },
         {
           provide: RecordCommentAnalysis,
@@ -602,7 +728,7 @@ export class PostgresPersistenceModule {
           inject: [InMemoryTikTokBusinessOAuthFlowStateStore, TikTokBusinessOAuthClient, LocalPilotTenantContext, SOCIAL_ACCOUNT_REPOSITORY, ConnectSocialAccount, SOCIAL_CREDENTIAL_VAULT],
         },
       ],
-      exports: [RELATIONAL_DATABASE, SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_PUBLICATION_REPOSITORY, SOCIAL_COMMENT_READER, SOCIAL_COMMENT_RESPONDER, SOCIAL_COMMENT_LIKER, SOCIAL_COMMENT_REPOSITORY, COMMENT_WORKFLOW_EVENT_REPOSITORY, VERIFIED_RELEASE_SCHEDULE_REPOSITORY, GetResponseGenerationSettings, UpdateResponseGenerationSettings, GetAIProviderAccessStatus, UpdateAIProviderAccessSettings, GetAccountResponseToneSettings, UpdateAccountResponseToneSettings, GetTenantResponseToneSettings, UpdateTenantResponseToneSettings, GetVerifiedReleaseSchedule, UpdateVerifiedReleaseSchedule, GetTenantVerifiedReleaseSchedule, UpdateTenantVerifiedReleaseSchedule, SyncPublicationComments, ListPublicationComments, GetCommentSummary, SetCommentLike, RecordCommentAnalysis, CorrectCommentAnalysis, RecordResponseSuggestion, ReviseResponseSuggestion, RecordResponseEvaluation, RecordManualResponse, ReviseManualResponse, SendManualCommentReply, ListCommentWorkflow, EvaluateComment, EvaluateResponseSuggestion, GenerateCommentResponseSuggestion, RunCommentWorkflowBatch, ListCommentWorkflowBatchEvents, ConnectSocialAccount, ListConnectedSocialAccounts, DisconnectSocialAccount, ListSocialPublications, BeginYouTubeOAuth, CompleteYouTubeOAuth, BeginInstagramOAuth, CompleteInstagramOAuth, BeginFacebookOAuth, CompleteFacebookOAuth, SelectFacebookPage, BeginTikTokBusinessOAuth, CompleteTikTokBusinessOAuth],
+      exports: [RELATIONAL_DATABASE, SOCIAL_ACCOUNT_REPOSITORY, SOCIAL_PUBLICATION_REPOSITORY, EPISODE_REVIEW_REPOSITORY, ANALYTICS_ENTRY_REPOSITORY, CreateAnalyticsSeries, CreateAnalyticsEpisode, CreateManualAnalyticsEpisode, ListAvailableEpisodePublications, UpdateAnalyticsEpisodeEconomics, UpsertAnalyticsPerformanceObservation, UpsertAnalyticsFollowerSnapshot, UpsertAnalyticsMonthlyRevenue, SOCIAL_COMMENT_READER, SOCIAL_COMMENT_RESPONDER, SOCIAL_COMMENT_LIKER, SOCIAL_COMMENT_REPOSITORY, SENT_REPLY_REPORT_REPOSITORY, COMMENT_WORKFLOW_EVENT_REPOSITORY, VERIFIED_RELEASE_SCHEDULE_REPOSITORY, GetResponseGenerationSettings, UpdateResponseGenerationSettings, GetAIProviderAccessStatus, UpdateAIProviderAccessSettings, GetAccountResponseToneSettings, UpdateAccountResponseToneSettings, GetTenantResponseToneSettings, UpdateTenantResponseToneSettings, GetVerifiedReleaseSchedule, UpdateVerifiedReleaseSchedule, GetTenantVerifiedReleaseSchedule, UpdateTenantVerifiedReleaseSchedule, SyncPublicationComments, ListPublicationComments, GetCommentSummary, ListSentRepliesReport, RefreshEpisodeSuggestions, GetEpisodeReview, ConfirmEpisodeSetupSeries, ConfirmEpisodeSetupSeasons, ApproveEpisodeSuggestionGroup, DecideEpisodeSuggestions, SetCommentLike, RecordCommentAnalysis, CorrectCommentAnalysis, RecordResponseSuggestion, ReviseResponseSuggestion, RecordResponseEvaluation, RecordManualResponse, ReviseManualResponse, SendManualCommentReply, ListCommentWorkflow, EvaluateComment, EvaluateResponseSuggestion, GenerateCommentResponseSuggestion, RunCommentWorkflowBatch, ListCommentWorkflowBatchEvents, ConnectSocialAccount, ListConnectedSocialAccounts, DisconnectSocialAccount, ListSocialPublications, BeginYouTubeOAuth, CompleteYouTubeOAuth, BeginInstagramOAuth, CompleteInstagramOAuth, BeginFacebookOAuth, CompleteFacebookOAuth, SelectFacebookPage, BeginTikTokBusinessOAuth, CompleteTikTokBusinessOAuth],
     };
   }
 }

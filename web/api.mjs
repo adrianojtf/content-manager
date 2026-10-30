@@ -61,6 +61,47 @@ export class CreatorDeskApi {
     return this.request('/social/accounts');
   }
 
+  getEpisodeReview(stage) {
+    const query = stage ? `?stage=${encodeURIComponent(stage)}` : '';
+    return this.request(`/analytics/episodes/review${query}`);
+  }
+
+  createAnalyticsSeries(input) {
+    return this.request('/analytics/series', { method: 'POST', body: input });
+  }
+
+  getAvailableEpisodePublications(platform) {
+    const query = new URLSearchParams({ platform });
+    return this.request(`/analytics/episodes/manual/publications?${query}`);
+  }
+
+  createManualAnalyticsEpisode(input) {
+    return this.request('/analytics/episodes/manual', { method: 'POST', body: input });
+  }
+
+  refreshEpisodeSuggestions() {
+    return this.request('/analytics/episodes/review/refresh', { method: 'POST' });
+  }
+
+  confirmEpisodeSetupSeries(input) {
+    return this.request('/analytics/episodes/setup/series/confirm', { method: 'POST', body: input });
+  }
+
+  confirmEpisodeSetupSeasons(input) {
+    return this.request('/analytics/episodes/setup/seasons/confirm', { method: 'POST', body: input });
+  }
+
+  approveEpisodeSuggestionGroup(input) {
+    return this.request('/analytics/episodes/review/approve', { method: 'POST', body: input });
+  }
+
+  decideEpisodeSuggestions(suggestionIds, decision) {
+    return this.request('/analytics/episodes/review/decision', {
+      method: 'POST',
+      body: { suggestionIds, decision },
+    });
+  }
+
   disconnectAccount(accountId) {
     return this.request(`/social/accounts/${encode(accountId)}`, { method: 'DELETE' });
   }
@@ -83,6 +124,48 @@ export class CreatorDeskApi {
 
   getCommentSummary() {
     return this.request('/social/comments/summary');
+  }
+
+  getSentRepliesReport(filters = {}) {
+    return this.request(`/social/replies/report?${this.sentRepliesReportQuery(filters, true)}`);
+  }
+
+  sentRepliesReportCsvUrl(filters = {}) {
+    return `${this.baseUrl}/social/replies/report.csv?${this.sentRepliesReportQuery(filters, false)}`;
+  }
+
+  async downloadSentRepliesReportCsv(filters = {}) {
+    const url = this.sentRepliesReportCsvUrl(filters);
+    let response;
+    try {
+      response = await this.fetcher(url, { method: 'GET', credentials: 'same-origin' });
+    } catch {
+      throw new CreatorDeskApiError(0, 'API_UNAVAILABLE');
+    }
+    if (!response.ok) {
+      let code = 'API_REQUEST_FAILED';
+      try {
+        const payload = await response.json();
+        if (typeof payload?.code === 'string') code = payload.code;
+      } catch {
+        // Keep only a stable fallback when the server response is not JSON.
+      }
+      throw new CreatorDeskApiError(response.status, code);
+    }
+    const disposition = response.headers?.get('content-disposition') ?? '';
+    const candidate = disposition.match(/filename="([^"]+)"/i)?.[1] ?? 'sent-replies.csv';
+    const filename = candidate.replace(/[^a-zA-Z0-9._-]/g, '') || 'sent-replies.csv';
+    return { blob: await response.blob(), filename };
+  }
+
+  sentRepliesReportQuery(filters, includePagination) {
+    const query = new URLSearchParams();
+    for (const key of ['from', 'to', 'platform', 'accountId', 'search']) {
+      if (filters[key]) query.set(key, filters[key]);
+    }
+    if (includePagination && filters.cursor) query.set('cursor', filters.cursor);
+    if (includePagination && filters.pageSize) query.set('pageSize', String(filters.pageSize));
+    return query.toString();
   }
 
   setCommentLike(accountId, externalCommentId, action) {

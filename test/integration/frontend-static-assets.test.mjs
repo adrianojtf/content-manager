@@ -29,6 +29,13 @@ test('Nest serves the CreatorDesk frontend and its static assets from the applic
     assert.match(html, /data-i18n="settings.aiHeading"/);
     assert.match(html, /id="verifiedReleaseScheduleToggle"/);
     assert.match(html, /id="verifiedReleaseSchedulePanel"[^>]*hidden/);
+    assert.match(html, /data-view="replies-report"/);
+    assert.match(html, /id="repliesReportFilters"/);
+    assert.match(html, /data-view="dashboard"/);
+    assert.match(html, /mobile-dashboard-link/);
+    assert.match(html, /id="dashboardScreen"/);
+    assert.match(html, /data-view="episodes"/);
+    assert.match(html, /id="episodesScreen"/);
 
     const stylesheet = await fetch(`${baseUrl}/styles.css`);
     assert.equal(stylesheet.status, 200);
@@ -48,6 +55,22 @@ test('Nest serves the CreatorDesk frontend and its static assets from the applic
     const uiFontSizeModule = await fetch(`${baseUrl}/ui-font-size.mjs`);
     assert.equal(uiFontSizeModule.status, 200);
     assert.match(uiFontSizeModule.headers.get('content-type') ?? '', /javascript/);
+
+    const reportModule = await fetch(`${baseUrl}/sent-replies-report.mjs`);
+    assert.equal(reportModule.status, 200);
+    assert.match(reportModule.headers.get('content-type') ?? '', /javascript/);
+
+    const analysisVisualsModule = await fetch(`${baseUrl}/analysis-visuals.mjs`);
+    assert.equal(analysisVisualsModule.status, 200);
+    assert.match(analysisVisualsModule.headers.get('content-type') ?? '', /javascript/);
+
+    const dashboardModule = await fetch(`${baseUrl}/dashboard.mjs`);
+    assert.equal(dashboardModule.status, 200);
+    assert.match(dashboardModule.headers.get('content-type') ?? '', /javascript/);
+
+    const episodeReviewModule = await fetch(`${baseUrl}/episode-review.mjs`);
+    assert.equal(episodeReviewModule.status, 200);
+    assert.match(episodeReviewModule.headers.get('content-type') ?? '', /javascript/);
 
     const accountSelectionModule = await fetch(`${baseUrl}/account-selection.mjs`);
     assert.equal(accountSelectionModule.status, 200);

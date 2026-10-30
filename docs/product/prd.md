@@ -2,14 +2,15 @@
 
 ## 1. Objective
 
-Deliver the product incrementally, starting with a focused creator workflow: list existing publications and their comments from connected social platforms, generate and edit suggested replies, and let the creator send each reply manually. Dashboard, product-user authentication, video publishing, and any streaming product are later phases.
+Deliver the product incrementally, starting with a focused creator workflow: list existing publications and their comments from connected social platforms, generate and edit suggested replies, and let the creator send each reply manually. A remote Phase 1 deployment requires authentication for its approved pilot creator. Public multi-tenant access, tenant administration, dashboard, video publishing, and any streaming product are later phases.
 
 ## 2. MVP Capabilities
 
-The first MVP is a controlled, single-creator pilot without public multi-tenant access or product-user login. Social account authorization remains required: each supported platform must be connected through its own approved authorization flow so the application can read publications/comments and send replies. This defers product-user authentication, not platform OAuth, access-token protection, or platform permission checks. Tenant identity and isolation contracts remain the target for the later authentication phase; the pilot must not be exposed as a public multi-user service.
+The first MVP is a controlled, single-creator pilot without public multi-tenant access or self-service registration. Before a remote Docker VM deployment is reachable, the approved pilot creator must authenticate through Auth0 OIDC using the configured Google connection; VPN or source-IP restrictions provide additional protection, not a substitute for application login. The pilot identity is provisioned explicitly and maps to the reserved tenant. Local loopback development may continue to use the fixed local pilot context. Social account authorization remains separate: each supported platform uses its own approved OAuth flow. The pilot must not be exposed as a public multi-user service.
 
 ### Publications and Community — Phase 1
 
+- Require Auth0/OIDC login for the approved creator in a remote deployment; reject unauthenticated product API requests.
 - Connect supported social accounts using platform authorization.
 - List existing publications and their comments where the platform permits.
 - Generate a suggested response to a comment.
@@ -19,13 +20,13 @@ The first MVP is a controlled, single-creator pilot without public multi-tenant 
 
 ### Dashboard — Phase 2
 
-- Build the manually fed Novelaria dashboard described in the [Analytics PRD](prds/analytics.md).
-- Keep analytics entry separate from social API synchronization unless a later scope explicitly adds it.
+- Build the Novelaria dashboard described in the [Analytics PRD](prds/analytics.md), with AI-assisted episode suggestions over imported publication metadata and creator approval.
+- Keep performance metrics manually entered and separate from social metric API synchronization; episode discovery adds no social API calls.
 
-### Product-user Authentication — Phase 3
+### Multi-tenant Identity and Administration — Phase 3
 
-- Add managed OIDC login, tenant membership, administration, and tenant isolation for a multi-user service.
-- Authentication and access control must be completed before opening the product to multiple users or tenants.
+- Expand the pilot login to provisioned multi-user tenant membership, tenant administration, and platform administration.
+- Complete tenant authorization and isolation journeys before opening the product to multiple users or tenants.
 
 ### Video Publishing — Phase 4
 
@@ -104,7 +105,7 @@ Platform capabilities are independent. Validate each operation against current o
 
 For Phase 1, exclude:
 
-- product-user login, public multi-user access, and tenant administration;
+- public multi-user access, self-service registration, and tenant administration;
 - dashboards and analytics;
 - video upload and publishing;
 - automatic reply sending;
@@ -116,10 +117,11 @@ A future vertical-drama streaming service, including subscriptions for channels,
 
 For Phase 1, the creator can:
 
-1. Connect a supported social account with the platform's approved authorization flow.
-2. View the account's existing publications and available comments.
-3. Generate a suggested response to a comment.
-4. Edit the suggestion and see the final text before sending.
-5. Manually send the response with an explicit action and see success, failure, or unsupported status.
+1. Sign in to the remote pilot using the pre-provisioned Auth0 identity federated through Google; unauthenticated product API requests are rejected.
+2. Connect a supported social account with the platform's approved authorization flow.
+3. View the account's existing publications and available comments.
+4. Generate a suggested response to a comment.
+5. Edit the suggestion and see the final text before sending.
+6. Manually send the response with an explicit action and see success, failure, or unsupported status.
 
-No response is sent automatically. Dashboard/analytics, user login, and video publishing are delivered only in their later phases.
+No response is sent automatically. Dashboard/analytics, public multi-user tenant administration, and video publishing are delivered only in their later phases.

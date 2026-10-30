@@ -33,6 +33,17 @@ import {
   recordPublicationPageCursor,
 } from './publication-pagination.mjs';
 import { syncPublicationPage } from './publication-page-sync.mjs';
+import { renderAnalyticsDashboard } from './dashboard.mjs';
+import {
+  renderEpisodeReviewScreen,
+  updateEpisodeCarousel,
+  updateEpisodeSelectionSummary,
+} from './episode-review.mjs';
+import {
+  buildSentRepliesReportFilters,
+  defaultSentRepliesReportDates,
+  renderSentRepliesReportRows,
+} from './sent-replies-report.mjs';
 import { applyThemePreference, readThemePreference, writeThemePreference } from './theme.mjs';
 import { replaceHtmlPreservingScroll } from './scroll-preservation.mjs';
 import {
@@ -64,11 +75,21 @@ const apiBaseUrl = document.querySelector('meta[name="api-base-url"]')?.content 
 const api = new CreatorDeskApi({ baseUrl: apiBaseUrl });
 const initialTheme = readThemePreference();
 const initialUiFontSize = readUiFontSizePreference();
+const reportDates = defaultSentRepliesReportDates();
+const initialScreen = window.location.hash === '#connections'
+  ? 'connections'
+  : window.location.hash === '#replies-report'
+    ? 'replies-report'
+    : window.location.hash === '#episodes'
+      ? 'episodes'
+    : window.location.hash === '#comments'
+      ? 'comments'
+      : 'dashboard';
 setUiLocale(readUiLocale());
 applyThemePreference(document.documentElement, initialTheme);
 applyUiFontSizePreference(document.documentElement, initialUiFontSize);
 const state = {
-  screen: window.location.hash === '#connections' ? 'connections' : 'comments',
+  screen: initialScreen,
   theme: initialTheme,
   activeNetwork: 'instagram',
   selectedAccountId: null,
@@ -117,6 +138,37 @@ const state = {
   publicationsError: null,
   searchLoading: false,
   connectedAccounts: [],
+  sentRepliesReport: {
+    draft: { ...reportDates, platform: '', accountId: '', search: '' },
+    filters: null,
+    accounts: [],
+    items: [],
+    total: 0,
+    nextCursor: null,
+    retryCursor: null,
+    loading: false,
+    loadingMore: false,
+    error: null,
+  },
+  episodeReview: {
+    loading: false,
+    refreshing: false,
+    saving: false,
+    error: null,
+    stage: 'SERIES',
+    series: [],
+    seriesProposals: [],
+    seasonProposals: [],
+    groups: [],
+    unmatched: [],
+    showUnidentifiedSeries: false,
+    showUnmatchedEpisodes: false,
+    refreshResult: null,
+    manualSeriesOpen: false,
+    manualEpisodeOpen: false,
+    manualEpisodeDraft: { selectedPublications: {} },
+    manualPicker: { open: false, platform: null, loading: false, error: null, publications: [] },
+  },
   connectionsLoading: false,
   connectionsError: null,
   connectingNetworks: new Set(),
@@ -136,6 +188,7 @@ const state = {
 };
 let searchTimer;
 let bulkReplyReturnFocus = null;
+let manualPickerReturnPlatform = null;
 
 function messageFor(error) {
   if (error instanceof CreatorDeskApiError || typeof error?.code === 'string') return apiErrorMessage(error.code);
@@ -225,10 +278,49 @@ function syncGlobalFontSettingsControl() {
   if (select) select.value = state.uiFontSize;
 }
 
+function renderRepliesReportScreen() {
+  const report = state.sentRepliesReport;
+  const form = $('#repliesReportFilters');
+  $('#repliesReportFrom').value = report.draft.from;
+  $('#repliesReportTo').value = report.draft.to;
+  const today = new Date().toISOString().slice(0, 10);
+  $('#repliesReportFrom').min = defaultSentRepliesReportDates().from;
+  $('#repliesReportFrom').max = today;
+  $('#repliesReportTo').max = today;
+  $('#repliesReportPlatform').value = report.draft.platform;
+  $('#repliesReportAccount').innerHTML = [
+    `<option value="">${t('report.allAccounts')}</option>`,
+    ...report.accounts.map((account) => `<option value="${escapeHtml(account.id)}">${escapeHtml(account.displayName || account.externalAccountId)}</option>`),
+  ].join('');
+  $('#repliesReportAccount').value = report.draft.accountId;
+  $('#repliesReportSearch').value = report.draft.search;
+  $('#repliesReportResults').setAttribute('aria-busy', String(report.loading || report.loadingMore));
+  $('#repliesReportResults').innerHTML = renderSentRepliesReportRows({
+    items: report.items,
+    total: report.total,
+    loading: report.loading,
+    loadingMore: report.loadingMore,
+    error: report.error,
+    nextCursor: report.nextCursor,
+  });
+  $('#repliesReportCsv').disabled = report.loading || report.loadingMore;
+  form.setAttribute('aria-busy', String(report.loading));
+}
+
+function renderEpisodeReview() {
+  $('#episodesScreen').innerHTML = renderEpisodeReviewScreen(state.episodeReview);
+}
+
 function render() {
   const settingsVisible = state.screen === 'connections';
-  $('#commentsScreen').hidden = settingsVisible;
+  const reportVisible = state.screen === 'replies-report';
+  const episodesVisible = state.screen === 'episodes';
+  const dashboardVisible = state.screen === 'dashboard';
+  $('#commentsScreen').hidden = settingsVisible || reportVisible || episodesVisible || dashboardVisible;
   $('#connectionsScreen').hidden = !settingsVisible;
+  $('#repliesReportScreen').hidden = !reportVisible;
+  $('#episodesScreen').hidden = !episodesVisible;
+  $('#dashboardScreen').hidden = !dashboardVisible;
   syncGlobalFontSettingsControl();
   const bulkDialog = $('#bulkReplyDialog');
   const bulkDialogFocus = captureBulkDialogFocus(bulkDialog);
@@ -237,12 +329,20 @@ function render() {
     : state.bulkReply;
   replaceHtmlPreservingScroll(
     bulkDialog,
-    settingsVisible ? '' : renderBulkReplyDialog(bulkModel),
+    settingsVisible || reportVisible || episodesVisible || dashboardVisible ? '' : renderBulkReplyDialog(bulkModel),
     () => bulkDialog.querySelector('.bulk-dialog-content'),
   );
   restoreBulkDialogFocus(bulkDialog, bulkDialogFocus);
-  bulkDialog.hidden = settingsVisible || !state.bulkReply?.open;
-  $('#breadcrumbCurrent').textContent = t(settingsVisible ? 'settings.title' : 'app.pageTitle');
+  bulkDialog.hidden = settingsVisible || reportVisible || episodesVisible || dashboardVisible || !state.bulkReply?.open;
+  $('#breadcrumbCurrent').textContent = t(settingsVisible
+    ? 'settings.title'
+    : reportVisible
+      ? 'report.title'
+      : episodesVisible
+        ? 'episodes.title'
+        : dashboardVisible
+          ? 'analytics.title'
+          : 'app.pageTitle');
   document.querySelectorAll('[data-view]').forEach((link) => {
     const active = link.dataset.view === state.screen;
     link.classList.toggle('active', active);
@@ -262,6 +362,18 @@ function render() {
       facebookSelection: state.facebookSelection,
       selectedFacebookPageId: state.selectedFacebookPageId,
     });
+    return;
+  }
+  if (reportVisible) {
+    renderRepliesReportScreen();
+    return;
+  }
+  if (episodesVisible) {
+    renderEpisodeReview();
+    return;
+  }
+  if (dashboardVisible) {
+    $('#dashboardScreen').innerHTML = renderAnalyticsDashboard();
     return;
   }
   ensureSelectedAccount();
@@ -624,10 +736,526 @@ async function saveAIProviderAccess(event) {
   }
 }
 
+async function loadSentRepliesReport({ cursor = null, append = false } = {}) {
+  const report = state.sentRepliesReport;
+  try {
+    report.filters ??= buildSentRepliesReportFilters(report.draft);
+  } catch {
+    report.error = 'invalid-date-range';
+    render();
+    return;
+  }
+  if (append) report.loadingMore = true;
+  else report.loading = true;
+  report.error = null;
+  report.retryCursor = cursor;
+  render();
+  try {
+    const result = await api.getSentRepliesReport({
+      ...report.filters,
+      ...(cursor ? { cursor } : {}),
+      pageSize: 25,
+    });
+    report.items = append ? [...report.items, ...result.items] : result.items;
+    report.total = result.total;
+    report.nextCursor = result.nextCursor;
+    report.retryCursor = null;
+  } catch (error) {
+    report.error = error;
+  } finally {
+    report.loading = false;
+    report.loadingMore = false;
+    render();
+  }
+}
+
+async function loadSentRepliesReportAccounts() {
+  try {
+    state.sentRepliesReport.accounts = await api.listAccounts();
+  } catch {
+    state.sentRepliesReport.accounts = [];
+  } finally {
+    if (state.screen === 'replies-report') render();
+  }
+}
+
+async function loadEpisodeReview({ showLoading = true, autoSync = false, stage } = {}) {
+  const review = state.episodeReview;
+  if (showLoading) {
+    review.loading = true;
+    review.error = null;
+    render();
+  }
+  try {
+    if (autoSync) {
+      review.refreshing = true;
+      review.refreshResult = null;
+      render();
+      try {
+        review.refreshResult = await api.refreshEpisodeSuggestions();
+      } catch {
+        review.refreshResult = { failures: [{}] };
+      } finally {
+        review.refreshing = false;
+      }
+    }
+    const result = await api.getEpisodeReview(stage);
+    review.stage = result.stage ?? 'EPISODES';
+    review.series = result.series ?? [];
+    review.seriesProposals = result.seriesProposals ?? [];
+    review.seasonProposals = result.seasonProposals ?? [];
+    review.groups = result.groups ?? [];
+    review.unmatched = result.unmatched ?? [];
+    review.error = null;
+  } catch {
+    review.error = true;
+  } finally {
+    review.loading = false;
+    if (state.screen === 'episodes') render();
+  }
+}
+
+async function refreshEpisodeSuggestions() {
+  const review = state.episodeReview;
+  review.refreshing = true;
+  review.refreshResult = null;
+  render();
+  try {
+    review.refreshResult = await api.refreshEpisodeSuggestions();
+    showToast(t('episodes.refreshSuccess', {
+      classified: formatNumber(review.refreshResult.classified ?? 0),
+      skipped: formatNumber(review.refreshResult.skipped ?? 0),
+      failed: formatNumber(review.refreshResult.failures?.length ?? 0),
+    }));
+  } catch {
+    showToast(t('episodes.actionFailed'), { error: true });
+  } finally {
+    review.refreshing = false;
+    await loadEpisodeReview({ showLoading: false });
+  }
+}
+
+async function decideEpisodeGroup(button) {
+  let suggestionIds;
+  try {
+    suggestionIds = JSON.parse(button.dataset.suggestionIds ?? '[]');
+  } catch {
+    suggestionIds = [];
+  }
+  const form = button.closest('form[data-setup-proposal], form[data-episode-group]');
+  const selectedIds = form
+    ? [...form.querySelectorAll('[data-review-publication]:checked')].map((input) => input.dataset.reviewPublication)
+    : suggestionIds;
+  if (!selectedIds.length) {
+    showToast(t('episodes.selectAtLeastOne'), { error: true });
+    return;
+  }
+  state.episodeReview.saving = true;
+  render();
+  try {
+    const decision = button.dataset.action === 'reject-episode-group' ? 'REJECTED' : 'DEFERRED';
+    await api.decideEpisodeSuggestions(selectedIds, decision);
+    showToast(t('episodes.actionSaved'));
+    await loadEpisodeReview({ showLoading: false });
+  } catch {
+    showToast(t('episodes.actionFailed'), { error: true });
+  } finally {
+    state.episodeReview.saving = false;
+    render();
+  }
+}
+
+async function confirmEpisodeSeriesProposal(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = new FormData(form);
+  const suggestionIds = [...form.querySelectorAll('[data-review-publication]:checked')]
+    .map((input) => input.dataset.reviewPublication);
+  if (!suggestionIds.length) {
+    showToast(t('episodes.selectAtLeastOne'), { error: true });
+    return;
+  }
+  const seriesId = values.get('seriesId') || '';
+  const input = {
+    suggestionIds,
+    ...(seriesId ? { seriesId } : {
+      newSeries: {
+        name: String(values.get('newSeriesName') ?? '').trim(),
+        aliases: String(values.get('seriesAliases') ?? '').split(',').map((alias) => alias.trim()).filter(Boolean),
+        seasonMode: values.get('seasonMode'),
+      },
+    }),
+  };
+  await saveEpisodeSetupDecision(() => api.confirmEpisodeSetupSeries(input));
+}
+
+async function confirmEpisodeSeasonProposal(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = new FormData(form);
+  const suggestionIds = [...form.querySelectorAll('[data-review-publication]:checked')]
+    .map((input) => input.dataset.reviewPublication);
+  if (!suggestionIds.length) {
+    showToast(t('episodes.selectAtLeastOne'), { error: true });
+    return;
+  }
+  await saveEpisodeSetupDecision(() => api.confirmEpisodeSetupSeasons({
+    suggestionIds,
+    seasonNumber: Number(values.get('seasonNumber')),
+  }));
+}
+
+async function saveEpisodeSetupDecision(action) {
+  state.episodeReview.saving = true;
+  render();
+  try {
+    await action();
+    showToast(t('episodes.actionSaved'));
+    await loadEpisodeReview({ showLoading: false });
+  } catch {
+    showToast(t('episodes.actionFailed'), { error: true });
+  } finally {
+    state.episodeReview.saving = false;
+    render();
+  }
+}
+
+async function approveEpisodeGroup(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = new FormData(form);
+  const suggestionIds = [...form.querySelectorAll('[data-review-publication]:checked')]
+    .map((input) => input.dataset.reviewPublication);
+  if (!suggestionIds.length) {
+    showToast(t('episodes.selectAtLeastOne'), { error: true });
+    return;
+  }
+  const seriesId = values.get('seriesId') || '';
+  const selectedSeries = state.episodeReview.series.find((series) => series.id === seriesId);
+  const seasonMode = selectedSeries?.seasonMode ?? values.get('seasonMode');
+  const seasonNumberValue = values.get('seasonNumber');
+  const episodeNumberValue = values.get('episodeNumber');
+  const input = {
+    suggestionIds,
+    ...(seriesId
+      ? { seriesId }
+      : {
+        newSeries: {
+          name: values.get('newSeriesName'),
+          aliases: String(values.get('seriesAliases') ?? '').split(',').map((alias) => alias.trim()).filter(Boolean),
+          seasonMode,
+        },
+      }),
+    seasonNumber: seasonMode === 'SEASONAL' && seasonNumberValue !== '' ? Number(seasonNumberValue) : null,
+    episodeNumber: Number(episodeNumberValue),
+    episodeCode: String(values.get('episodeCode') ?? '').trim(),
+  };
+  state.episodeReview.saving = true;
+  render();
+  try {
+    await api.approveEpisodeSuggestionGroup(input);
+    showToast(t('episodes.actionSaved'));
+    await loadEpisodeReview({ showLoading: false });
+  } catch {
+    showToast(t('episodes.actionFailed'), { error: true });
+  } finally {
+    state.episodeReview.saving = false;
+    render();
+  }
+}
+
+function emptyManualEpisodeDraft() {
+  return { seriesId: '', seasonNumber: '', episodeNumber: '', episodeCode: '', selectedPublications: {} };
+}
+
+function captureManualEpisodeDraft() {
+  const form = document.querySelector('#episodesScreen form[data-manual-episode-form]');
+  if (!form) return;
+  const values = new FormData(form);
+  const draft = state.episodeReview.manualEpisodeDraft;
+  draft.seriesId = String(values.get('seriesId') ?? '');
+  draft.seasonNumber = String(values.get('seasonNumber') ?? '');
+  draft.episodeNumber = String(values.get('episodeNumber') ?? '');
+  draft.episodeCode = String(values.get('episodeCode') ?? '');
+}
+
+function openManualEpisodeForm() {
+  const review = state.episodeReview;
+  review.manualEpisodeDraft = emptyManualEpisodeDraft();
+  review.manualEpisodeOpen = true;
+  render();
+  document.querySelector('#episodesScreen form[data-manual-episode-form] [name="seriesId"]')?.focus({ preventScroll: true });
+}
+
+function closeManualEpisodeForm() {
+  const review = state.episodeReview;
+  review.manualEpisodeOpen = false;
+  review.manualEpisodeDraft = emptyManualEpisodeDraft();
+  review.manualPicker = { open: false, platform: null, loading: false, error: null, publications: [] };
+  render();
+}
+
+async function createManualSeries(event) {
+  event.preventDefault();
+  const values = new FormData(event.target);
+  const input = {
+    name: String(values.get('name') ?? '').trim(),
+    aliases: String(values.get('aliases') ?? '').split(',').map((alias) => alias.trim()).filter(Boolean),
+    seasonMode: values.get('seasonMode'),
+  };
+  state.episodeReview.saving = true;
+  render();
+  try {
+    await api.createAnalyticsSeries(input);
+    state.episodeReview.manualSeriesOpen = false;
+    showToast(t('episodes.actionSaved'));
+    await loadEpisodeReview({ showLoading: false });
+  } catch {
+    showToast(t('episodes.actionFailed'), { error: true });
+  } finally {
+    state.episodeReview.saving = false;
+    render();
+  }
+}
+
+function focusManualPublicationPicker() {
+  document.querySelector('#episodesScreen .manual-publication-picker')?.focus({ preventScroll: true });
+}
+
+async function loadManualPickerPublications(platform) {
+  const picker = state.episodeReview.manualPicker;
+  if (!picker?.open || picker.platform !== platform) return;
+  picker.loading = true;
+  picker.error = null;
+  picker.publications = [];
+  render();
+  focusManualPublicationPicker();
+  try {
+    const publications = await api.getAvailableEpisodePublications(platform);
+    picker.publications = Array.isArray(publications) ? publications : [];
+    picker.error = null;
+  } catch {
+    picker.publications = [];
+    picker.error = true;
+  } finally {
+    picker.loading = false;
+    render();
+    focusManualPublicationPicker();
+  }
+}
+
+async function openManualPublicationPicker(platform, trigger) {
+  if (!platform) return;
+  captureManualEpisodeDraft();
+  manualPickerReturnPlatform = trigger?.dataset?.platform ?? platform;
+  state.episodeReview.manualPicker = { open: true, platform, loading: true, error: null, publications: [] };
+  render();
+  focusManualPublicationPicker();
+  await loadManualPickerPublications(platform);
+}
+
+function closeManualPublicationPicker() {
+  const picker = state.episodeReview.manualPicker;
+  if (!picker?.open) return;
+  const returnPlatform = manualPickerReturnPlatform ?? picker.platform;
+  state.episodeReview.manualPicker = { open: false, platform: null, loading: false, error: null, publications: [] };
+  manualPickerReturnPlatform = null;
+  render();
+  document.querySelector(
+    `#episodesScreen [data-manual-platform="${CSS.escape(returnPlatform)}"] [data-action="open-manual-publication-picker"]`,
+  )?.focus({ preventScroll: true });
+}
+
+function selectManualPublication(button) {
+  const review = state.episodeReview;
+  const picker = review.manualPicker;
+  const publication = (picker?.publications ?? []).find((item) => (
+    item.socialAccountId === button.dataset.accountId
+    && item.externalPublicationId === button.dataset.publicationId
+  ));
+  if (!publication) return;
+  review.manualEpisodeDraft.selectedPublications[picker.platform] = {
+    platform: picker.platform,
+    socialAccountId: publication.socialAccountId,
+    externalPublicationId: publication.externalPublicationId,
+    socialAccountName: publication.socialAccountName ?? null,
+    title: publication.title ?? '',
+    thumbnailUrl: publication.thumbnailUrl ?? null,
+  };
+  closeManualPublicationPicker();
+}
+
+function removeManualPublication(platform) {
+  const draft = state.episodeReview.manualEpisodeDraft;
+  if (!platform || !draft?.selectedPublications?.[platform]) return;
+  delete draft.selectedPublications[platform];
+  render();
+  document.querySelector(
+    `#episodesScreen [data-manual-platform="${CSS.escape(platform)}"] [data-action="open-manual-publication-picker"]`,
+  )?.focus({ preventScroll: true });
+}
+
+async function createManualEpisode(event) {
+  event.preventDefault();
+  const review = state.episodeReview;
+  captureManualEpisodeDraft();
+  const draft = review.manualEpisodeDraft;
+  const selectedSeries = review.series.find((series) => series.id === draft.seriesId);
+  if (!selectedSeries) {
+    showToast(t('episodes.actionFailed'), { error: true });
+    return;
+  }
+  const publicationSelections = Object.values(draft.selectedPublications ?? {}).map((selection) => ({
+    socialAccountId: selection.socialAccountId,
+    externalPublicationId: selection.externalPublicationId,
+  }));
+  review.saving = true;
+  render();
+  try {
+    await api.createManualAnalyticsEpisode({
+      seriesId: selectedSeries.id,
+      seasonNumber: selectedSeries.seasonMode === 'SEASONAL' && draft.seasonNumber !== ''
+        ? Number(draft.seasonNumber)
+        : null,
+      episodeNumber: Number(draft.episodeNumber),
+      episodeCode: String(draft.episodeCode ?? '').trim(),
+      productionCost: null,
+      productionTimeSeconds: null,
+      publicationSelections,
+    });
+    showToast(t('episodes.actionSaved'));
+    review.manualEpisodeOpen = false;
+    review.manualEpisodeDraft = emptyManualEpisodeDraft();
+    await loadEpisodeReview({ showLoading: false });
+  } catch {
+    showToast(t('episodes.actionFailed'), { error: true });
+  } finally {
+    review.saving = false;
+    render();
+  }
+}
+
+function trapManualPickerFocus(event) {
+  const dialog = document.querySelector('#episodesScreen .manual-publication-picker');
+  if (!dialog) return;
+  const focusable = [...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.hidden && element.offsetParent !== null);
+  if (!focusable.length) {
+    event.preventDefault();
+    dialog.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function syncEpisodeSetupSeriesForm(form) {
+  const seriesSelect = form?.querySelector('[data-role="setup-series"]');
+  if (!seriesSelect) return;
+  const selectedSeries = state.episodeReview.series.find((series) => series.id === seriesSelect.value);
+  const selected = Boolean(selectedSeries);
+  const newSeriesFields = form.querySelector('[data-role="setup-new-series-fields"]');
+  newSeriesFields.hidden = selected;
+  newSeriesFields.querySelectorAll('input').forEach((input) => { input.disabled = selected || state.episodeReview.saving; });
+  const newSeriesName = newSeriesFields.querySelector('[name="newSeriesName"]');
+  if (newSeriesName) newSeriesName.required = !selected;
+  const seasonMode = form.querySelector('[data-role="setup-season-mode"]');
+  seasonMode.disabled = selected || state.episodeReview.saving;
+  if (selected) seasonMode.value = selectedSeries.seasonMode;
+  else if (!seasonMode.value) seasonMode.value = '';
+}
+
+function navigateEpisodeCarousel(button) {
+  const carousel = button.closest('[data-episode-carousel]');
+  if (!carousel) return;
+  const current = Number(carousel.dataset.carouselIndex) || 0;
+  const delta = button.dataset.action === 'episode-carousel-next' ? 1 : -1;
+  updateEpisodeCarousel(carousel, current + delta);
+}
+
+function syncEpisodeGroupForm(form, { resetSeasonMode = false } = {}) {
+  const seriesSelect = form?.querySelector('[data-role="episode-series"]');
+  if (!seriesSelect) return;
+  const selectedSeries = state.episodeReview.series.find((series) => series.id === seriesSelect.value);
+  const newSeriesSelected = !selectedSeries;
+  const newSeriesFields = form.querySelector('[data-role="new-series-fields"]');
+  const newSeriesName = newSeriesFields?.querySelector('[name="newSeriesName"]');
+  newSeriesFields.hidden = !newSeriesSelected;
+  newSeriesFields.querySelectorAll('input').forEach((input) => { input.disabled = !newSeriesSelected; });
+  if (newSeriesName) newSeriesName.required = newSeriesSelected;
+
+  const modeSelect = form.querySelector('[data-role="episode-season-mode"]');
+  modeSelect.disabled = Boolean(selectedSeries);
+  if (selectedSeries) modeSelect.value = selectedSeries.seasonMode;
+  else if (resetSeasonMode) modeSelect.value = '';
+
+  const seasonNumber = form.querySelector('[name="seasonNumber"]');
+  const seasonMode = selectedSeries?.seasonMode ?? modeSelect.value;
+  seasonNumber.disabled = seasonMode === 'NON_SEASONAL';
+  seasonNumber.required = seasonMode === 'SEASONAL';
+  if (seasonMode === 'NON_SEASONAL') seasonNumber.value = '';
+}
+
+function updateSentRepliesReportDraft(form) {
+  const values = new FormData(form);
+  state.sentRepliesReport.draft = {
+    from: values.get('from'),
+    to: values.get('to'),
+    platform: values.get('platform') || '',
+    accountId: values.get('accountId') || '',
+    search: values.get('search') || '',
+  };
+}
+
+async function applySentRepliesReportFilters(form) {
+  updateSentRepliesReportDraft(form);
+  const report = state.sentRepliesReport;
+  try {
+    report.filters = buildSentRepliesReportFilters(report.draft);
+    report.items = [];
+    report.total = 0;
+    report.nextCursor = null;
+    report.retryCursor = null;
+    await loadSentRepliesReport();
+  } catch {
+    report.error = 'invalid-date-range';
+    render();
+  }
+}
+
+async function exportSentRepliesReportCsv() {
+  const report = state.sentRepliesReport;
+  const button = $('#repliesReportCsv');
+  button.disabled = true;
+  try {
+    const filters = report.filters ?? buildSentRepliesReportFilters(report.draft);
+    const { blob, filename } = await api.downloadSentRepliesReportCsv(filters);
+    const objectUrl = URL.createObjectURL(blob);
+    const download = document.createElement('a');
+    download.href = objectUrl;
+    download.download = filename;
+    document.body.append(download);
+    download.click();
+    download.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  } catch {
+    showToast(t('report.exportFailed'), { error: true });
+  } finally {
+    render();
+  }
+}
+
 async function setScreen(screen) {
   if (state.busy.has('page-sync') || state.searchLoading || state.loadingPublications
     || state.publicationLoadingAccounts.size > 0 || state.bulkReply?.busy) return;
-  if (screen !== 'comments' && screen !== 'connections') return;
+  if (screen !== 'dashboard' && screen !== 'episodes' && screen !== 'comments' && screen !== 'connections' && screen !== 'replies-report') return;
   if (state.bulkReply?.open) {
     closeBulkReply();
     if (state.bulkReply?.open) return;
@@ -635,8 +1263,20 @@ async function setScreen(screen) {
   state.screen = screen;
   window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${screen}`);
   render();
+  if (screen === 'dashboard') return;
+  if (screen === 'episodes') {
+    await loadEpisodeReview({ autoSync: true });
+    return;
+  }
   if (screen === 'connections') {
     await Promise.all([loadConnectedAccounts(), loadAIProviderSettings()]);
+    return;
+  }
+  if (screen === 'replies-report') {
+    if (!state.sentRepliesReport.filters) {
+      state.sentRepliesReport.filters = buildSentRepliesReportFilters(state.sentRepliesReport.draft);
+    }
+    await Promise.all([loadSentRepliesReportAccounts(), loadSentRepliesReport()]);
     return;
   }
   const [publicationsReady] = await Promise.all([refreshPublications(), loadCommentSummary()]);
@@ -2068,9 +2708,135 @@ function attachEvents() {
     void setScreen(link.dataset.view);
   }));
   window.addEventListener('hashchange', () => {
-    const screen = window.location.hash === '#connections' ? 'connections' : 'comments';
+    const screen = window.location.hash === '#connections'
+      ? 'connections'
+      : window.location.hash === '#replies-report'
+        ? 'replies-report'
+        : window.location.hash === '#episodes'
+          ? 'episodes'
+        : window.location.hash === '#comments'
+          ? 'comments'
+          : 'dashboard';
     if (screen !== state.screen) void setScreen(screen);
   });
+  $('#repliesReportFilters').addEventListener('input', (event) => {
+    if (!event.target.name) return;
+    updateSentRepliesReportDraft(event.currentTarget);
+  });
+  $('#repliesReportFilters').addEventListener('submit', (event) => {
+    event.preventDefault();
+    void applySentRepliesReportFilters(event.currentTarget);
+  });
+  $('#repliesReportCsv').addEventListener('click', () => { void exportSentRepliesReportCsv(); });
+  $('#repliesReportResults').addEventListener('click', (event) => {
+    const action = event.target.closest?.('[data-action]')?.dataset.action;
+    if (action === 'report-more' && state.sentRepliesReport.nextCursor) {
+      void loadSentRepliesReport({ cursor: state.sentRepliesReport.nextCursor, append: true });
+    } else if (action === 'report-retry') {
+      const cursor = state.sentRepliesReport.retryCursor;
+      void loadSentRepliesReport({ cursor, append: Boolean(cursor) });
+    }
+  });
+  $('#episodesScreen').addEventListener('click', (event) => {
+    if (event.target.matches?.('[data-manual-picker-backdrop]')) {
+      closeManualPublicationPicker();
+      return;
+    }
+    const button = event.target.closest?.('button[data-action]');
+    if (!button) return;
+    if (button.dataset.action === 'refresh-episode-suggestions') void refreshEpisodeSuggestions();
+    else if (button.dataset.action === 'retry-episode-review') void loadEpisodeReview();
+    else if (button.dataset.action === 'episode-review-stage') void loadEpisodeReview({ stage: button.dataset.stage });
+    else if (button.dataset.action === 'toggle-unidentified-series') {
+      state.episodeReview.showUnidentifiedSeries = !state.episodeReview.showUnidentifiedSeries;
+      render();
+    } else if (button.dataset.action === 'toggle-unmatched-episodes') {
+      state.episodeReview.showUnmatchedEpisodes = !state.episodeReview.showUnmatchedEpisodes;
+      render();
+    }
+    else if (button.dataset.action === 'episode-carousel-prev' || button.dataset.action === 'episode-carousel-next') {
+      navigateEpisodeCarousel(button);
+    }
+    else if (button.dataset.action === 'reject-episode-group' || button.dataset.action === 'defer-episode-group') {
+      void decideEpisodeGroup(button);
+    }
+    else if (button.dataset.action === 'toggle-manual-series-form') {
+      state.episodeReview.manualSeriesOpen = !state.episodeReview.manualSeriesOpen;
+      render();
+      if (state.episodeReview.manualSeriesOpen) {
+        document.querySelector('#episodesScreen form[data-manual-series-form] [name="name"]')?.focus({ preventScroll: true });
+      }
+    }
+    else if (button.dataset.action === 'cancel-manual-series') {
+      state.episodeReview.manualSeriesOpen = false;
+      render();
+    }
+    else if (button.dataset.action === 'toggle-manual-episode-form') openManualEpisodeForm();
+    else if (button.dataset.action === 'cancel-manual-episode') closeManualEpisodeForm();
+    else if (button.dataset.action === 'open-manual-publication-picker') {
+      void openManualPublicationPicker(button.dataset.platform, button);
+    }
+    else if (button.dataset.action === 'retry-manual-publication-picker') {
+      void loadManualPickerPublications(button.dataset.platform);
+    }
+    else if (button.dataset.action === 'close-manual-publication-picker') closeManualPublicationPicker();
+    else if (button.dataset.action === 'select-manual-publication') selectManualPublication(button);
+    else if (button.dataset.action === 'remove-manual-publication') removeManualPublication(button.dataset.platform);
+  });
+  $('#episodesScreen').addEventListener('submit', (event) => {
+    if (event.target.matches('form[data-series-proposal]')) void confirmEpisodeSeriesProposal(event);
+    else if (event.target.matches('form[data-season-proposal]')) void confirmEpisodeSeasonProposal(event);
+    else if (event.target.matches('form[data-episode-group]')) void approveEpisodeGroup(event);
+    else if (event.target.matches('form[data-manual-series-form]')) void createManualSeries(event);
+    else if (event.target.matches('form[data-manual-episode-form]')) void createManualEpisode(event);
+  });
+  $('#episodesScreen').addEventListener('keydown', (event) => {
+    if (!state.episodeReview.manualPicker?.open) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeManualPublicationPicker();
+    } else if (event.key === 'Tab') {
+      trapManualPickerFocus(event);
+    }
+  });
+  $('#episodesScreen').addEventListener('change', (event) => {
+    const control = event.target.closest?.('[data-review-publication], [data-role="setup-series"], [data-role="episode-series"], [data-role="episode-season-mode"], [data-role="manual-episode-series"]');
+    if (!control) return;
+    if (control.matches('[data-review-publication]')) {
+      updateEpisodeSelectionSummary(control.closest('form[data-setup-proposal], form[data-episode-group]'));
+      return;
+    }
+    if (control.matches('[data-role="manual-episode-series"]')) {
+      captureManualEpisodeDraft();
+      render();
+      return;
+    }
+    if (control.matches('[data-role="setup-series"]')) {
+      syncEpisodeSetupSeriesForm(control.closest('form[data-series-proposal]'));
+      return;
+    }
+    syncEpisodeGroupForm(control.closest('form[data-episode-group]'), {
+      resetSeasonMode: control.matches('[data-role="episode-series"]'),
+    });
+  });
+  let episodeCarouselTouchStart = null;
+  $('#episodesScreen').addEventListener('pointerdown', (event) => {
+    if (event.pointerType !== 'touch' || event.target.closest?.('a, button, input, select, textarea, label')) return;
+    const carousel = event.target.closest?.('[data-episode-carousel]');
+    if (!carousel) return;
+    episodeCarouselTouchStart = { carousel, x: event.clientX, y: event.clientY };
+  });
+  $('#episodesScreen').addEventListener('pointerup', (event) => {
+    const start = episodeCarouselTouchStart;
+    episodeCarouselTouchStart = null;
+    if (!start || event.pointerType !== 'touch' || event.target.closest?.('a, button, input, select, textarea, label')) return;
+    const horizontalDistance = event.clientX - start.x;
+    const verticalDistance = event.clientY - start.y;
+    if (Math.abs(horizontalDistance) < 45 || Math.abs(horizontalDistance) <= Math.abs(verticalDistance)) return;
+    const current = Number(start.carousel.dataset.carouselIndex) || 0;
+    updateEpisodeCarousel(start.carousel, current + (horizontalDistance < 0 ? 1 : -1));
+  });
+  $('#episodesScreen').addEventListener('pointercancel', () => { episodeCarouselTouchStart = null; });
   $('#connectionsScreen').addEventListener('click', (event) => { void handleProfileAction(event); });
   $('#aiProviderSettings').addEventListener('submit', (event) => {
     if (event.target.matches('#responseGenerationSettingsForm')) void saveAIProviderModel(event);
@@ -2247,6 +3013,21 @@ async function start() {
   applyStaticTranslations();
   attachEvents();
   render();
+  if (state.screen === 'dashboard') {
+    state.loadingPublications = false;
+    return;
+  }
+  if (state.screen === 'episodes') {
+    state.loadingPublications = false;
+    await loadEpisodeReview({ autoSync: true });
+    return;
+  }
+  if (state.screen === 'replies-report') {
+    state.loadingPublications = false;
+    state.sentRepliesReport.filters = buildSentRepliesReportFilters(state.sentRepliesReport.draft);
+    await Promise.all([loadSentRepliesReportAccounts(), loadSentRepliesReport()]);
+    return;
+  }
   const summaryLoad = loadCommentSummary();
   if (state.screen === 'connections') {
     await Promise.all([summaryLoad, loadConnectedAccounts(), loadAIProviderSettings()]);

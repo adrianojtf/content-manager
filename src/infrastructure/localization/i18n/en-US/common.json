@@ -5,5 +5,8 @@
   "items.count": {
     "one": "{count} item",
     "other": "{count} items"
-  }
+  },
+  "analytics.episodeSuggestion.rationale.episode": "JEV marked this publication as a possible episode; review its identity and linked publications.",
+  "analytics.episodeSuggestion.rationale.notEpisode": "JEV found insufficient evidence that this publication is an episode.",
+  "analytics.episodeSuggestion.rationale.uncertain": "The metadata is not sufficient to classify this publication safely; review it manually."
 }

@@ -1,4 +1,5 @@
 import { apiErrorMessage, formatDateTime, formatNumber, socialSyncFailureMessage, t, uiLocale } from './i18n.mjs';
+import { localizedAnalysisEnum, renderAnalysisEvidence, renderAnalysisGauge } from './analysis-visuals.mjs';
 
 export const networkInfo = Object.freeze({
   instagram: { nameKey: 'network.name.instagram', symbol: '◎', className: 'instagram' },
@@ -820,37 +821,35 @@ function stat(label, value, note, icon) {
 
 function renderAnalysisSummary(analysis) {
   return `<div class="analysis-summary">
-    <span class="analysis-chip"><strong>${t('comment.scoreSentiment')}</strong> ${escapeHtml(label(analysis.sentiment))}</span>
-    <span class="analysis-chip"><strong>${t('comment.scoreIntent')}</strong> ${escapeHtml(label(analysis.intent))}</span>
-    <span class="analysis-chip"><strong>${t('comment.scoreConfidence')}</strong> ${escapeHtml(formatScore(analysis.confidence))}</span>
+    <span class="analysis-chip"><strong>${t('comment.scoreSentiment')}</strong> ${escapeHtml(localizedAnalysisEnum('sentiment', analysis.sentiment))}</span>
+    <span class="analysis-chip"><strong>${t('comment.scoreIntent')}</strong> ${escapeHtml(localizedAnalysisEnum('intent', analysis.intent))}</span>
+    <span class="analysis-summary-gauge"><strong>${t('comment.scoreConfidence')}</strong>${renderAnalysisGauge(analysis.confidence, { label: t('comment.scoreConfidence'), direction: 'positive', compact: true })}</span>
   </div>`;
 }
 
 function renderAnalysis(analysis) {
-  const metrics = [
-    [t('comment.scoreSentiment'), analysis.sentiment],
-    [t('comment.scoreEmotion'), analysis.emotion],
-    [t('comment.scoreIntent'), analysis.intent],
-    [t('comment.scoreTopic'), analysis.topic],
+  const categoricalMetrics = [
+    [t('comment.scoreSentiment'), localizedAnalysisEnum('sentiment', analysis.sentiment)],
+    [t('comment.scoreEmotion'), localizedAnalysisEnum('emotion', analysis.emotion)],
+    [t('comment.scoreIntent'), localizedAnalysisEnum('intent', analysis.intent)],
+    [t('comment.scoreTopic'), localizedAnalysisEnum('topic', analysis.topic)],
     [t('comment.scoreEntity'), analysis.entity ?? t('comment.entityUnknown')],
-    [t('comment.scoreSpam'), formatScore(analysis.spamScore)],
-    [t('comment.scoreToxicity'), formatScore(analysis.toxicityScore)],
-    [t('comment.scoreEngagement'), formatScore(analysis.engagementValue)],
-    [t('comment.scoreConfidence'), formatScore(analysis.confidence)],
   ];
-  if (analysis.signals?.needsExternalFacts) {
-    metrics.push([
-      t('comment.scoreNeedsExternalFacts'),
-      formatScore(analysis.signals.needsExternalFacts.probability),
-    ]);
+  const numericMetrics = [
+    [t('comment.scoreSpam'), analysis.spamScore, 'risk'],
+    [t('comment.scoreToxicity'), analysis.toxicityScore, 'risk'],
+    [t('comment.scoreEngagement'), analysis.engagementValue, 'positive'],
+    [t('comment.scoreConfidence'), analysis.confidence, 'positive'],
+  ];
+  if (typeof analysis.signals?.needsExternalFacts?.probability === 'number') {
+    numericMetrics.push([t('comment.scoreNeedsExternalFacts'), analysis.signals.needsExternalFacts.probability, 'risk']);
   }
   if (typeof analysis.continuationRequestProbability === 'number') {
-    metrics.push([
-      t('comment.scoreContinuationRequest'),
-      formatScore(analysis.continuationRequestProbability),
-    ]);
+    numericMetrics.push([t('comment.scoreContinuationRequest'), analysis.continuationRequestProbability, 'positive']);
   }
-  return `<div class="analysis-grid">${metrics.map(([name, value]) => `<div class="analysis-metric"><span>${escapeHtml(name)}</span><strong>${escapeHtml(label(value))}</strong></div>`).join('')}</div>
+  return `<div class="analysis-grid">${categoricalMetrics.map(([name, value]) => `<div class="analysis-metric analysis-enum-metric"><span>${escapeHtml(name)}</span><strong>${escapeHtml(value)}</strong></div>`).join('')}</div>
+    <div class="analysis-gauge-grid">${numericMetrics.map(([name, value, direction]) => `<div class="analysis-metric analysis-score-metric"><span>${escapeHtml(name)}</span>${renderAnalysisGauge(value, { label: name, direction })}</div>`).join('')}</div>
+    ${renderAnalysisEvidence(analysis.signals)}
     ${analysis.rationale ? `<p class="analysis-note">${escapeHtml(analysis.rationale)}</p>` : ''}
     <div class="analysis-meta"><span class="pill neutral">${escapeHtml(analysis.provider)} · ${escapeHtml(analysis.model)}</span><span class="pill neutral">${t('comment.analysisVersion', { version: escapeHtml(analysis.schemaVersion) })}</span></div>`;
 }

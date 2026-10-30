@@ -6,5 +6,8 @@
   "items.count": {
     "one": "{count} item",
     "other": "{count} itens"
-  }
+  },
+  "analytics.episodeSuggestion.rationale.episode": "O JEV sinalizou esta publicação como possível episódio; revise a identidade e as publicações associadas.",
+  "analytics.episodeSuggestion.rationale.notEpisode": "O JEV não identificou evidência suficiente de que esta publicação seja um episódio.",
+  "analytics.episodeSuggestion.rationale.uncertain": "Os metadados não permitem classificar esta publicação com segurança; revise-a manualmente."
 }

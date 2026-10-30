@@ -1,14 +1,15 @@
 # Technical Specification — Tenant Identity and Access
 
-**Status:** IAM-01 model accepted; IAM-02 generic OIDC verification, local identity lookup, PostgreSQL mapping, and HTTP guards are implemented. IAM-03 preference persistence and IAM-05 authenticated tenant-isolation E2E coverage are implemented. The profile exposes a browser-local light/dark appearance preference. Auth0 deployment values and operational migration/rollback remain open.
+**Status:** IAM-01 model accepted; IAM-02 generic OIDC verification, local identity lookup, PostgreSQL mapping, and bearer-guard foundations are implemented. IAM-03 preference persistence and IAM-05 authenticated tenant-isolation E2E coverage are implemented. ADR-008 selects a same-origin NestJS BFF/session for the Phase 1 remote pilot, but the production HTTP composition and CreatorDesk login are not yet wired. Auth0 configuration, Google federation, pilot-user bootstrap, and operational migration/rollback remain open Phase 1 deployment gates.
 
 **Product source:** [MVP PRD](../product/prd.md)  
 **Architecture decision:** [ADR-006 — Tenant Identity and Access](../architecture/decisions/ADR-006-tenant-identity-and-access.md)  
+- **Phase 1 session decision:** [ADR-008 — Phase 1 Authenticated Browser Session](../architecture/decisions/ADR-008-phase1-authenticated-session.md)
 **Localization contract:** [Localization Contract](../contracts/localization.md)
 
 ## 1. Scope
 
-Provide authenticated tenant context and tenant isolation for the multi-tenant MVP, plus a web administration console for platform tenant provisioning and tenant membership administration. This is an application boundary; it does not introduce a separate identity microservice.
+Provide authenticated tenant context for the remote Phase 1 pilot and tenant isolation for the multi-tenant MVP, plus a later web administration console for platform tenant provisioning and membership administration. The Phase 1 pilot provisions one approved creator; it does not introduce public registration or self-service tenant creation. This is an application boundary; it does not introduce a separate identity microservice.
 
 ## 2. Accepted Identity Model
 
@@ -22,7 +23,9 @@ Provide authenticated tenant context and tenant isolation for the multi-tenant M
 
 ## 3. Authentication and Request Context
 
-Auth0 is the selected managed OpenID Connect provider. The web console uses the OIDC authorization-code flow with PKCE. The API receives the exact Auth0 discovery `issuer`, registered API `audience`, and discovery `jwks_uri` through runtime configuration; it validates access-token signature, issuer, audience, required subject and expiry, and applicable `nbf` time claims. Configure the Auth0 API to sign with `RS256`; the verifier accepts only explicitly configured asymmetric algorithms. OIDC issuer and JWKS endpoints require HTTPS; HTTP localhost is permitted only in deterministic tests. The API validates access tokens for its API audience, not ID tokens.
+Auth0 is the selected managed OpenID Connect provider. Google is federated through Auth0; the application never accepts Google tokens directly. The browser login uses authorization-code flow with PKCE. The API receives the exact Auth0 discovery `issuer`, registered API `audience`, and discovery `jwks_uri` through runtime configuration; it validates access-token signature, issuer, audience, required subject and expiry, and applicable `nbf` time claims. Configure the Auth0 API to sign with `RS256`; the verifier accepts only explicitly configured asymmetric algorithms. OIDC issuer and JWKS endpoints require HTTPS; HTTP localhost is permitted only in deterministic tests. The API validates access tokens for its API audience, not ID tokens.
+
+For the Phase 1 remote pilot, the selected pattern is a same-origin BFF/session in NestJS. Auth0 tokens and client secrets remain server-side; the browser receives an opaque `Secure`, `HttpOnly`, `SameSite=Lax` session cookie. Session records are persisted with expiry/revocation so a restart or later horizontal scaling does not lose all sessions. State-changing cookie-authenticated requests require CSRF protection. The social-provider callback must return through this authenticated browser session and bind its single-use state to the authenticated user and tenant. VPN/source-IP restrictions are additional network controls.
 
 Application-facing authentication contracts are provider-neutral:
 
@@ -51,7 +54,11 @@ type AuthenticatedPrincipal =
 
 The application principal contains only identities resolved from local records. Tenant ID is never trusted from a request body, query parameter, or unvalidated token claim. Missing/invalid tokens, unknown/inactive identities, inactive tenants, and users without the required membership are rejected before application workflows run with stable error codes. Raw tokens and OIDC claims are not logged.
 
-`OidcAuthenticationModule.register` composes the verifier, identity repository, and HTTP guards. Controllers explicitly apply `OidcAuthenticationGuard`; tenant routes additionally apply `TenantMembershipGuard`, and administration routes apply `PlatformAdminGuard`. Missing/invalid credentials map to 401, an unavailable identity provider maps to 503, and a role/context mismatch maps to 403.
+In the Phase 1 remote pilot, Auth0 is the OIDC broker and Google is enabled as its federated login connection. The NestJS BFF validates Auth0 access tokens issued for the registered API audience, then creates a server-side session; browser API requests use that session, not a token in local storage. The application does not accept Google ID/access tokens directly. Only explicitly provisioned pilot identities mapped by `(issuer, subject)` to an active local user and pilot-tenant membership are allowed. Email/domain allowlisting at Auth0 or the deployment edge is defense-in-depth, not a replacement for the local identity/membership check. Self-service registration and tenant switching remain out of scope.
+
+The CreatorDesk login uses the BFF/session pattern in [ADR-008](../architecture/decisions/ADR-008-phase1-authenticated-session.md). The web client/session integration must not persist access or refresh tokens in browser `localStorage`. Social-provider callback state is single-use, short-lived, persisted outside process memory, and bound to the authenticated user and tenant. VPN/source-IP restriction is an additional pilot control.
+
+`OidcAuthenticationModule.register` composes the verifier, identity repository, and bearer guards. IAM-08 must compose it with the server-side session authenticator and ensure product controllers reject unauthenticated requests; tenant routes additionally apply `TenantMembershipGuard`, and administration routes apply `PlatformAdminGuard`. Missing/invalid credentials map to 401, an unavailable identity provider maps to 503, and a role/context mismatch maps to 403. The current `AppModule.withPostgres` composition does not yet import the OIDC module or guard the production controllers; IAM-08 tracks this integration.
 
 ### IAM-02 identity persistence foundation
 
@@ -73,7 +80,7 @@ A web console provides separate capabilities for the global platform administrat
 - The console itself authenticates through OIDC and checks the corresponding platform or tenant role on every server-side operation.
 - No client-side role check is an authorization boundary.
 
-The console uses the existing localization port. IAM-03 persists tenant/user preferences; FND-04 wires those persisted values into authenticated request context and presentation before the localized console is exposed.
+The console uses the existing localization port. IAM-03 persists tenant/user preferences; FND-04 wires those persisted values into authenticated request context and presentation for the Phase 3 tenant-administration console.
 
 ## 6. Localization Preferences
 
@@ -98,6 +105,7 @@ The console uses the existing localization port. IAM-03 persists tenant/user pre
 
 ## 8. Remaining Implementation Decisions
 
-- Deployment-specific Auth0 domain, API identifier, callback/logout origins, secret delivery, and bootstrap procedure for the first `PLATFORM_ADMIN`; finalize in IAM-07.
-- Invitation/activation details for provisioned users and tenant/member deactivation or deletion policy; finalize in IAM-06.
+- Deployment-specific Auth0 domain, API identifier, Google connection, exact callback/logout origins, server-side secret delivery, and bootstrap procedure for the Phase 1 pilot identity; finalize in IAM-07/IAM-08.
+- Maintained OIDC/BFF session library and exact login/logout/social callback routes for the current static CreatorDesk; resolve and test these in IAM-08 before registering Auth0 callback URLs.
+- Invitation/activation details for additional users, platform-admin provisioning, and tenant/member deactivation or deletion policy; finalize in IAM-06 for Phase 3.
 - Operational migration runner, rollout ordering, and rollback tooling; IAM-03 defines the SQL migration, which must be applied before tenant provisioning.

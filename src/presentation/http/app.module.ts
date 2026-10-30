@@ -8,6 +8,7 @@ import { FacebookOAuthConnectionController } from './facebook-oauth-connection.c
 import { TikTokBusinessOAuthConnectionController } from './tiktok-business-oauth-connection.controller';
 import { SocialCommentsController } from './social-comments.controller';
 import { SocialCommentSummaryController } from './social-comment-summary.controller';
+import { SentRepliesReportController } from './sent-replies-report.controller';
 import { CommentWorkflowAuditController } from './comment-workflow-audit.controller';
 import { CommentIntelligenceController } from './comment-intelligence.controller';
 import { ResponseGenerationSettingsController } from './response-generation-settings.controller';
@@ -18,6 +19,8 @@ import { TenantVerifiedReleaseScheduleController } from './tenant-verified-relea
 import { CommentWorkflowBatchController } from './comment-workflow-batch.controller';
 import { SocialAccountsController } from './social-accounts.controller';
 import { AIProviderAccessSettingsController } from './ai-provider-access-settings.controller';
+import { EpisodeReviewController } from './episode-review.controller';
+import { AnalyticsEntryController } from './analytics-entry.controller';
 
 @Module({})
 export class AppModule {
@@ -25,7 +28,7 @@ export class AppModule {
     return {
       module: AppModule,
       imports: [PostgresPersistenceModule.register(config)],
-      controllers: [SocialPublicationsController, SocialAccountsController, YouTubeOAuthConnectionController, InstagramOAuthConnectionController, FacebookOAuthConnectionController, TikTokBusinessOAuthConnectionController, SocialCommentsController, SocialCommentSummaryController, CommentWorkflowAuditController, CommentIntelligenceController, ResponseGenerationSettingsController, AIProviderAccessSettingsController, ResponseToneSettingsController, TenantResponseToneSettingsController, VerifiedReleaseScheduleController, TenantVerifiedReleaseScheduleController, CommentWorkflowBatchController],
+      controllers: [SocialPublicationsController, SocialAccountsController, YouTubeOAuthConnectionController, InstagramOAuthConnectionController, FacebookOAuthConnectionController, TikTokBusinessOAuthConnectionController, SocialCommentsController, SocialCommentSummaryController, SentRepliesReportController, CommentWorkflowAuditController, CommentIntelligenceController, ResponseGenerationSettingsController, AIProviderAccessSettingsController, ResponseToneSettingsController, TenantResponseToneSettingsController, VerifiedReleaseScheduleController, TenantVerifiedReleaseScheduleController, CommentWorkflowBatchController, EpisodeReviewController, AnalyticsEntryController],
     };
   }
 }

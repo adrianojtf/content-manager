@@ -1,13 +1,15 @@
 # Guia de configuração do Auth0 e OIDC
 
-Este guia explica os valores planejados para IAM-07, onde encontrá-los e como serão usados. Ele não exige que você configure tudo agora.
+Este guia descreve os valores necessários para o login Auth0/OIDC da Fase 1 remota, onde encontrá-los e como serão usados. Não configure URLs de callback até a integração web estar implementada.
 
 ## Estado atual do projeto
 
-- Auth0 foi escolhido como provedor OIDC.
+- Auth0 foi escolhido como provedor OIDC; o Google será uma conexão federada dentro do Auth0.
 - O verificador da API já valida access tokens destinados à API usando issuer, audience, chaves JWKS e `RS256`.
-- O console Next.js e suas rotas de login/logout ainda não foram implementados. Por isso, ainda não é possível definir com segurança as URLs exatas de callback.
-- O bootstrap local atual usa Postgres e ainda não compõe o módulo OIDC. A API local pode iniciar sem os valores Auth0; adicioná-los ao `.env.local` não habilitará login até que a composição de autenticação seja conectada.
+- O login web, a composição Auth0 no runtime, as guards nas rotas de produto e o bootstrap do usuário piloto ainda não foram implementados. O `AppModule.withPostgres` atual não importa o módulo OIDC.
+- O login Auth0 via Google e VPN/source-IP como defesa adicional são requisitos da implantação Docker. O login não habilita cadastro público nem acesso multi-tenant.
+- O cliente web atual é estático. O padrão escolhido para IAM-08 é BFF/sessão server-side no NestJS, sem adicionar um serviço Next.js somente para login; as URLs exatas de callback/logout dependem das rotas que serão implementadas.
+- A API aceitará apenas tokens emitidos pelo Auth0 para o audience da API. Tokens Google diretos não serão aceitos. Adicionar valores ao `.env.local` não habilita login até a integração ser conectada.
 - Não coloque client secrets, tokens, senhas ou `AUTH0_SECRET` neste documento, no Git ou no chat.
 
 ## Primeiro: entenda os componentes
@@ -15,9 +17,9 @@ Este guia explica os valores planejados para IAM-07, onde encontrá-los e como s
 Há dois registros diferentes no Auth0:
 
 1. **API (resource server):** representa esta API e define o identificador usado como `audience` nos access tokens.
-2. **Application (client):** representa o futuro console Next.js, que iniciará login e logout. Recebe um `Client ID` e, por ser um aplicativo web executado no servidor, também terá um `Client Secret`.
+2. **Application (client):** representa o cliente web/BFF que iniciará login e logout. O tipo de cliente e o uso de `Client Secret` dependem da integração escolhida em IAM-08; qualquer segredo de cliente permanece server-side.
 
-O console solicita um access token para a API. A API verifica se o token foi emitido pelo issuer esperado, se foi destinado à audience correta e se sua assinatura corresponde a uma chave pública publicada no JWKS. O `Client ID` não é a `audience`, e a API não deve receber um ID token no lugar do access token.
+O BFF solicita um access token destinado à API usando Authorization Code + PKCE. O verificador Auth0 valida issuer, audience e assinatura via JWKS antes de criar a sessão local. O `Client ID` não é a `audience`, e o backend não deve receber um ID token ou token Google no lugar do access token Auth0.
 
 ## Valores necessários
 
@@ -26,11 +28,11 @@ O console solicita um access token para a API. A API verifica se o token foi emi
 | `OIDC_ISSUER` | Identifica exatamente o Auth0 tenant/custom domain que emitiu o token. A API compara esse valor com o claim `iss`. | No campo `issuer` do documento OIDC Discovery. Copie o valor exato, inclusive a barra final, se houver. | Não |
 | `OIDC_AUDIENCE` | Identifica esta API. A API compara esse valor com o claim `aud` do access token. | Auth0 Dashboard → **Applications → APIs** → selecione a API → **Identifier**. O valor é escolhido ao criar a API. | Não |
 | `OIDC_JWKS_URI` | Endereço das chaves públicas que a API usa para verificar assinaturas JWT. | No campo `jwks_uri` do documento OIDC Discovery. Copie-o; não construa a URL manualmente. | Não |
-| `AUTH0_DOMAIN` | Informa ao SDK do console qual domínio Auth0 usar nos fluxos de login/logout. | Auth0 Dashboard → **Applications → Applications** → selecione o aplicativo → **Settings → Basic Information → Domain**. Use o formato que o SDK escolhido exigir; o SDK Next.js atual usa o host do domínio. | Não |
-| `AUTH0_CLIENT_ID` | Identifica o aplicativo Next.js perante o Auth0. Não é a audience da API. | Na mesma tela do aplicativo, campo **Client ID**. | Não |
-| `AUTH0_CLIENT_SECRET` | Autentica o aplicativo web confidencial perante o Auth0. | Credenciais do aplicativo no Auth0 Dashboard. | **Sim — Secret Manager somente** |
-| `AUTH0_SECRET` | Chave aleatória usada pelo SDK web para proteger a sessão/cookies locais do console. Não é fornecida pelo Auth0. | Gerada localmente. O quickstart atual do SDK Next.js documenta `openssl rand -hex 32`; confirme o formato ao escolher a versão do SDK. | **Sim — Secret Manager somente** |
-| `APP_BASE_URL` | URL pública de origem do console Next.js, usada pelo SDK para construir callbacks e URLs de sessão. Não é necessariamente a URL da API. | Definida pela configuração local/deployment do console. | Não |
+| `AUTH0_DOMAIN` | Informa ao cliente web/BFF qual domínio Auth0 usar nos fluxos de login/logout. | Auth0 Dashboard → **Applications → Applications** → selecione o aplicativo → **Settings → Basic Information → Domain**. Use o formato exigido pela integração IAM-08. | Não |
+| `AUTH0_CLIENT_ID` | Identifica o cliente web perante o Auth0. Não é a audience da API. | Na mesma tela do aplicativo, campo **Client ID**. | Não |
+| `AUTH0_CLIENT_SECRET` | Autentica o BFF server-side perante o Auth0. Nunca é enviada ao navegador. | Credenciais do aplicativo Auth0 confidencial selecionado. | **Sim — Secret Manager somente** |
+| `AUTH0_SECRET` | Chave aleatória usada pelo componente server-side para proteger a sessão/cookies. Não é fornecida pelo Auth0. | Gerada localmente; confirme formato/tamanho na documentação da biblioteca escolhida. | **Sim — Secret Manager somente** |
+| `APP_BASE_URL` | Origem pública HTTPS do CreatorDesk, usada para construir callbacks, logout e cookies. | Definida pela implantação, por exemplo `https://<APP_DOMAIN>`. | Não |
 | Allowed Callback URLs | URLs completas para as quais o Auth0 pode redirecionar após login. O caminho depende da versão e configuração do SDK. | Auth0 Dashboard → **Applications → Applications** → aplicativo → **Settings → Application URIs**. Definir depois de implementar/selecionar o SDK. | Não |
 | Allowed Logout URLs | Destinos permitidos para o retorno após logout. | Na mesma seção de URLs do aplicativo. | Não |
 | Allowed Web Origins | Origens de navegador permitidas em fluxos que as exigem; origem é esquema + host + porta, sem caminho. | Na mesma seção de URLs do aplicativo, conforme a necessidade do SDK. | Não |
@@ -58,28 +60,28 @@ Use o mesmo domínio — tenant domain ou custom domain — de forma consistente
 4. Escolha **RS256** para a assinatura dos access tokens. A implementação atual aceita esse algoritmo.
 5. Salve a API e registre o Identifier exatamente como aparece no Dashboard.
 
-O cliente Next.js deverá solicitar access tokens destinados a essa API. Um token destinado a outro audience será rejeitado.
+O cliente web deverá solicitar access tokens destinados a essa API. Um token destinado a outro audience será rejeitado.
 
 ### Criar o aplicativo web
 
-Quando o console Next.js for implementado, crie no Auth0 uma aplicação do tipo **Regular Web Application**. O Auth0 fornece `AUTH0_DOMAIN` e `AUTH0_CLIENT_ID`; o `Client Secret` deve ser colocado diretamente no Secret Manager do ambiente servidor.
+Para a implantação Docker, crie no Auth0 a API e uma aplicação web confidencial para o BFF definido em [ADR-008](../architecture/decisions/ADR-008-phase1-authenticated-session.md). Habilite a conexão Google somente para a aplicação aprovada e restrinja o piloto a identidades explicitamente provisionadas. Guarde `AUTH0_CLIENT_SECRET` e a chave de sessão no secret store server-side.
 
-A URL de callback exata ainda não deve ser inventada: ela depende da versão/configuração do SDK Next.js que será adotada em IAM-06. Depois dessa escolha, configurar no Auth0 as URLs exatas de callback e logout e os Web Origins necessários. Use URLs HTTPS nos ambientes públicos, evite curingas em produção e não inclua `localhost` nas configurações de produção.
+A URL de callback exata ainda não deve ser inventada: ela depende das rotas BFF que serão implementadas em IAM-08. Depois da implementação, configure no Auth0 as URLs exatas de callback, logout e Web Origins para `APP_BASE_URL`. Use HTTPS, evite curingas e não inclua `localhost` nas configurações de produção.
 
-O `APP_BASE_URL` é a origem pública do console, por exemplo `http://localhost:<porta-do-console>` em desenvolvimento. O backend atual também usa a porta 3000 por padrão; quando o console for criado, escolha portas/origens que não colidam ou configure um proxy local.
+O `APP_BASE_URL` é a origem do CreatorDesk, por exemplo `http://localhost:3000` em desenvolvimento e `https://<APP_DOMAIN>` na VM. O callback Auth0 é independente dos callbacks dos provedores sociais.
 
 ### Segredos
 
-- `AUTH0_CLIENT_SECRET` vem do aplicativo Auth0 e deve ser armazenado como segredo server-side.
-- `AUTH0_SECRET` é uma chave aleatória própria do console. O quickstart atual do Auth0 Next.js usa `openssl rand -hex 32`, que produz 64 caracteres hexadecimais; verifique o requisito da versão do SDK escolhida.
+- `AUTH0_CLIENT_SECRET` vem do aplicativo Auth0 confidencial e deve ser armazenado como segredo server-side.
+- `AUTH0_SECRET` é uma chave aleatória própria da sessão server-side, se exigida pelo SDK escolhido. Verifique o formato e o tamanho na documentação dessa versão.
 - Armazene ambos no Secret Manager do ambiente (local, staging ou produção). Não os envie por chat, não os coloque em arquivos versionados e não os exponha ao JavaScript do navegador.
 - `.env.example` deve conter apenas nomes e valores demonstrativos não secretos. O `.env.local` local fica ignorado pelo Git; não reutilize segredos de produção nele.
 
 ### Primeiro `PLATFORM_ADMIN`
 
-`PLATFORM_ADMIN` é um grant local global, não um papel definido por e-mail ou por uma claim arbitrária do cliente. O sistema associa uma identidade OIDC verificada pelo par exato `(issuer, subject)` a um usuário local; a migration atual mantém o grant em `platform_admins`, separado de `tenant_memberships`.
+`PLATFORM_ADMIN` é um grant local global, não um papel definido por e-mail ou por uma claim arbitrária do cliente. O login da Fase 1 exige somente um usuário piloto explicitamente provisionado e uma membership no tenant piloto; esse usuário não precisa ser `PLATFORM_ADMIN`. O sistema associa a identidade OIDC verificada pelo par exato `(issuer, subject)` a um usuário local; a migration atual mantém o grant em `platform_admins`, separado de `tenant_memberships`.
 
-O bootstrap inicial precisa ser feito por um operador autorizado e por um processo auditável que associe o `issuer` e o `sub` exatos da identidade Auth0 escolhida à identidade local, e conceda o grant de administrador global. Não use e-mail como chave de identidade, não aceite um `sub` fornecido pelo cliente e não conceda o papel apenas porque o Auth0 autenticou alguém. O console/procedimento operacional para esse bootstrap ainda não está implementado; não há, neste momento, um comando seguro de bootstrap para executar.
+O piloto da Fase 1 precisa de um usuário local ativo com membership no tenant piloto; ele não precisa receber `PLATFORM_ADMIN`. Um operador autorizado deve provisionar esse usuário associando o `issuer` e o `sub` exatos da identidade Auth0/Google federada à identidade local. Não use e-mail como chave de identidade nem aceite um `sub` fornecido pelo cliente. A concessão de `PLATFORM_ADMIN` e o console de administração continuam na Fase 3; o procedimento de bootstrap ainda precisa ser implementado.
 
 O claim `sub` identifica o sujeito do token; para login de usuário, o Auth0 documenta que ele corresponde ao `user_id`. A equipe operadora deve verificar o valor no contexto do tenant e da aplicação corretos. Não compartilhe access tokens para obter esse valor.
 
@@ -93,20 +95,21 @@ OIDC_AUDIENCE=<API_IDENTIFIER>
 OIDC_JWKS_URI=https://<AUTH0_DOMAIN>/.well-known/jwks.json
 AUTH0_DOMAIN=<AUTH0_DOMAIN>
 AUTH0_CLIENT_ID=<CLIENT_ID>
-APP_BASE_URL=<NEXTJS_APP_ORIGIN>
+APP_BASE_URL=https://<APP_DOMAIN>
 ```
 
-`AUTH0_CLIENT_SECRET` e `AUTH0_SECRET` foram omitidos deliberadamente. Cadastre-os diretamente no Secret Manager quando houver um console Next.js e um ambiente servidor definidos.
+`AUTH0_CLIENT_SECRET` e `AUTH0_SECRET` foram omitidos deliberadamente. Cadastre apenas os segredos exigidos pela integração IAM-08 diretamente no secret store server-side; nunca os copie para o JavaScript do navegador ou para um arquivo versionado.
 
-## O que fornecer para concluir IAM-07
+## O que fornecer para concluir IAM-07/IAM-08
 
 Quando tiver acesso ao Auth0, compartilhe somente os dados não secretos:
 
 - `issuer`, `jwks_uri` obtido pelo Discovery e Identifier da API (`audience`);
-- Domain e Client ID do aplicativo Regular Web;
-- origens/ambientes locais e públicos planejados; as URLs exatas de callback/logout serão fechadas após escolher o SDK Next.js;
-- qual Secret Manager será usado e se os dois segredos já estão guardados nele — sem compartilhar os valores;
-- qual operador/processo aprovado fará o bootstrap do primeiro `PLATFORM_ADMIN`.
+- Domain e Client ID do aplicativo web/BFF;
+- a conexão Google habilitada no Auth0 e a lista de identidades piloto aprovadas, sem compartilhar tokens;
+- domínio público da aplicação e ambiente VPN/allowlist; as URLs exatas de callback/logout serão fechadas pela implementação IAM-08;
+- qual Secret Manager será usado e se os segredos necessários estão guardados nele — sem compartilhar os valores;
+- processo aprovado para provisionar o usuário piloto e, posteriormente, o primeiro `PLATFORM_ADMIN`.
 
 ## Referências oficiais
 
@@ -114,5 +117,5 @@ Quando tiver acesso ao Auth0, compartilhe somente os dados não secretos:
 - [Auth0: configurar APIs](https://auth0.com/docs/get-started/auth0-overview/set-up-apis)
 - [Auth0: configurações de aplicação e URLs](https://auth0.com/docs/get-started/applications/application-settings)
 - [Auth0: credenciais de aplicação](https://auth0.com/docs/get-started/applications/credentials)
-- [Auth0: quickstart Next.js](https://auth0.com/docs/quickstart/webapp/nextjs)
+- [Auth0: quickstart Next.js](https://auth0.com/docs/quickstart/webapp/nextjs) (reference only; Phase 1 uses the NestJS BFF in ADR-008)
 - [Auth0: validar access tokens](https://auth0.com/docs/secure/tokens/access-tokens/validate-access-tokens)

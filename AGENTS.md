@@ -46,6 +46,7 @@ JEV is an intelligence provider.
 - Response evaluation.
 - Audience insight generation.
 - Content recommendation generation.
+- Classification of already-imported publication metadata into pending episode suggestions, subject to creator review.
 
 ### Forbidden
 
@@ -62,6 +63,8 @@ JEV is an intelligence provider.
 - Must preserve confidence.
 - Must preserve rationale when applicable.
 - Must be auditable.
+- Episode suggestions must preserve source publication identities, schema/model version, evidence, and separate `pt-BR`, `en-US`, and `es-ES` rationale variants; partial language failures remain explicit.
+- Episode suggestions never create episodes or link publications without an explicit creator approval handled by an authorized application use case.
 
 ## Automation Boundary
 

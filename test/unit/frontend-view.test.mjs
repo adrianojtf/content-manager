@@ -285,14 +285,56 @@ test('comment rendering escapes provider-supplied text and disables unsupported 
   assert.equal(html.includes('<script>alert("comment")</script>'), false);
   assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'));
   assert.ok(html.includes('Resposta externa desconhecida'));
-  assert.ok(html.includes('Pedido de conteúdo'));
+  assert.ok(html.includes('Solicitação de conteúdo'));
   assert.ok(html.includes('Potencial de engajamento (estimado)'));
   assert.ok(html.includes('Prob. de precisar de fatos externos'));
   assert.ok(html.includes('Prob. de pedir continuação'));
   assert.ok(html.includes('76%'));
   assert.ok(html.includes('96%'));
+  assert.match(html, /role="meter"/);
+  assert.match(html, /data-direction="risk"/);
+  assert.match(html, /data-direction="positive"/);
   assert.ok(html.includes('A plataforma não permite responder a este comentário.'));
   assert.match(html, /<button[^>]*data-action="send-response"[^>]*disabled/);
+});
+
+test('comment JEV enums use Portuguese semantic labels and numeric scores use gauges', () => {
+  const key = commentKey(comment.socialAccountId, comment.externalCommentId);
+  const analysisEvent = {
+    id: 'analysis-localized',
+    eventType: 'COMMENT_ANALYSIS_CREATED',
+    status: 'SUCCEEDED',
+    payload: {
+      ...analysis,
+      sentiment: 'NEUTRAL',
+      emotion: 'NEUTRAL',
+      intent: 'CONTENT_REQUEST',
+      topic: 'OTHER',
+      spamScore: 0.82,
+      engagementValue: 0.76,
+      confidence: 0.91,
+      signals: {
+        sentiment: { confidence: 0.91, probabilities: { NEUTRAL: 0.91, POSITIVE: 0.04, NEGATIVE: 0.05 } },
+      },
+    },
+  };
+  const html = renderComment(comment, {
+    workflows: new Map([[key, [analysisEvent]]]),
+    workflowErrors: new Map(),
+    workflowLoading: new Set(),
+    expandedComments: new Set([key]),
+    drafts: new Map(),
+    busy: new Set(),
+    language: 'pt-BR',
+  });
+
+  assert.match(html, /Neutro/);
+  assert.match(html, /Solicitação de conteúdo/);
+  assert.match(html, /Outro/);
+  assert.match(html, /aria-valuenow="82"/);
+  assert.match(html, /data-status="bad"/);
+  assert.match(html, /Evidências por pergunta/);
+  assert.doesNotMatch(html, /CONTENT_REQUEST|<pre>/);
 });
 
 test('comment rendering shows only persisted creator replies and escapes their provider-supplied text', () => {

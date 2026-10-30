@@ -1,17 +1,17 @@
 # Technical Specification — Two-Phase Deployment and Cloud Migration
 
-**Status:** Accepted deployment direction. The initial VM provider, cloud provider, region, production SLO, and managed-service selection remain open.
+**Status:** Accepted deployment direction. Phase 1 requires a custom domain, trusted HTTPS, Auth0 login federated through Google, the same-origin NestJS BFF/session in ADR-008, and VPN/source-IP restrictions. The VM provider, cloud provider, region, production SLO, and managed-service selection remain open.
 
 - **Product source:** [MVP PRD](../product/prd.md)
 - **Architecture:** [Architecture](../architecture/architecture.md) · [ADR-002 — Modular Monolith](../architecture/decisions/ADR-002-modular-monolith.md)
-- **Decision:** [ADR-007 — Two-Phase Deployment and Cloud Portability](../architecture/decisions/ADR-007-deployment-portability.md)
+- **Decisions:** [ADR-007 — Two-Phase Deployment and Cloud Portability](../architecture/decisions/ADR-007-deployment-portability.md) · [ADR-008 — Phase 1 Authenticated Browser Session](../architecture/decisions/ADR-008-phase1-authenticated-session.md)
 
 ## 1. Goals
 
-- Deploy the existing NestJS application and PostgreSQL on a single Linux VM using Docker Compose for a restricted pilot.
+- Deploy the existing NestJS application and PostgreSQL on a single Linux VM using Docker Compose for a restricted pilot with a custom domain, trusted HTTPS, and authenticated creator access.
 - Keep business rules independent of the host and cloud provider so the same containerized application can move to managed cloud compute later.
 - Define the data, security, operations, and rollback work required for each migration phase.
-- Do not expose the current unauthenticated pilot as a public multi-tenant service.
+- Do not expose the current unauthenticated runtime. Phase 1 login and API authorization are release gates; public multi-tenant access remains out of scope.
 
 ## 2. Non-Goals
 
@@ -43,10 +43,13 @@ PostgreSQL has no published host port. It is reachable only on the private Compo
 
 The pilot has one VM and one PostgreSQL failure domain. A host, disk, or zone failure can make both application and database unavailable. This limitation must be communicated to pilot operators and is not an availability guarantee.
 
-### 3.3 Access and secrets
+### 3.3 Domain, authentication, and secrets
 
-- Phase 1 is limited to a trusted pilot audience through a VPN, source-IP allowlist, or equivalent access boundary. Caddy provides TLS but does not provide product-user authentication.
-- Product-user authentication and tenant authorization must be integrated before the product is exposed as a public multi-tenant service, as required by the PRD.
+- The VM uses a dedicated DNS name in `APP_DOMAIN`. DNS must resolve to the VM, Caddy must present a publicly trusted certificate for that name, and automatic certificate renewal must be verified before pilot use.
+- The remote Phase 1 application requires Auth0 OIDC login with Google configured as an Auth0 federated connection. The BFF validates Auth0-issued access tokens for the registered API audience to establish a server-side session; API routes authorize the local principal and pilot-tenant membership. The application does not accept Google tokens directly.
+- Use the same-origin NestJS BFF/session pattern in [ADR-008](../architecture/decisions/ADR-008-phase1-authenticated-session.md). Auth0 callback, logout, and web-origin URLs must exactly match the implemented HTTPS routes. The BFF, API guards, and social-provider callback binding are not yet wired; until IAM-08 is complete, the Docker artifacts are not ready for remote use.
+- VPN or source-IP allowlisting remains defense-in-depth. Caddy terminates TLS but does not authenticate users. Network restrictions do not replace Auth0 login or API authorization.
+- Product-user authentication and tenant authorization must be active before any remote product workflow is available. Public multi-user access, self-service registration, and tenant administration remain later-phase scope.
 - Runtime configuration is supplied from files outside the repository with restrictive host permissions or an equivalent host secret mechanism. Secrets are not passed as Docker build arguments.
 - PostgreSQL data backups are encrypted and stored off the VM. The credential-encryption key is recovered separately and must never be bundled with database backups.
 - Operators verify backup restoration before relying on the deployment for creator or tenant data.
@@ -103,10 +106,13 @@ The provider is not selected by this specification. Region, cost, data residency
 - A production image builds from the repository without copying local environment files, certificates, or secrets.
 - The application serves both its HTTP routes and static frontend from the image.
 - The local default bind remains loopback-only; the Compose runtime explicitly binds the application inside the container network.
+- The VM domain resolves correctly and presents a trusted, automatically renewed HTTPS certificate; Auth0 callback/logout/web-origin settings use that exact origin.
+- The application accepts only explicitly provisioned pilot identities after Auth0 login; unauthenticated API requests fail closed, and authorized requests resolve their tenant from the local identity/membership.
+- A social-provider OAuth round-trip initiated by an authenticated creator returns to the same authenticated user/tenant and rejects missing, replayed, expired, or mismatched state.
 - Compose configuration has health checks for PostgreSQL and the application; PostgreSQL is not published to the host.
 - The database volume survives container replacement, and the documented off-host backup can be restored.
-- Pilot access restrictions are verified before enabling the public DNS route.
-- Product-user authentication remains a release gate for public multi-tenant access.
+- VPN/source-IP restrictions are verified as an additional access boundary before enabling the DNS route.
+- Auth0 login, API guards, and authenticated tenant context are release gates for the Phase 1 remote deployment.
 
 ### Phase 2
 
