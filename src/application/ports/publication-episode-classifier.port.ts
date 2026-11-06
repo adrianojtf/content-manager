@@ -1,5 +1,6 @@
 import {
   publicationEpisodeClassifications,
+  type ExplicitEpisodeIdentity,
   type PublicationEpisodeClassification,
 } from '../../domain/analytics/episode-identity';
 import type { SocialPlatform } from '../../domain/social/social-account';
@@ -24,6 +25,47 @@ export interface PublicationEpisodeClassificationResult {
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number } | null;
 }
 
+export const episodeIdentityVerifications = ['VALID', 'INVALID', 'UNCERTAIN'] as const;
+export type EpisodeIdentityVerification = typeof episodeIdentityVerifications[number];
+
+export interface EpisodeIdentityVerificationResult {
+  readonly verdict: EpisodeIdentityVerification;
+  readonly confidence: number | null;
+  readonly model: string | null;
+  readonly usage: { readonly inputTokens: number; readonly outputTokens: number } | null;
+}
+
+export interface EpisodeIdentitySeriesCatalogEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly aliases: readonly string[];
+  readonly seasonMode: 'SEASONAL' | 'NON_SEASONAL';
+  readonly knownSeasonNumbers: readonly number[];
+}
+
+export type EpisodeIdentityExtractionSeriesRef =
+  | { readonly type: 'existing'; readonly seriesId: string }
+  | { readonly type: 'new'; readonly name: string }
+  | null;
+
+export interface EpisodeIdentityExtractionResult {
+  readonly seriesRef: EpisodeIdentityExtractionSeriesRef;
+  readonly seasonNumber: number | null;
+  readonly episodeNumber: number | null;
+  readonly episodeCode: string | null;
+  readonly confidence: number | null;
+  readonly model: string | null;
+  readonly usage: { readonly inputTokens: number; readonly outputTokens: number } | null;
+}
+
 export interface PublicationEpisodeClassifier {
   classify(input: { readonly publication: PublicationEpisodeMetadata }): Promise<PublicationEpisodeClassificationResult>;
+  verifyEpisodeIdentity(input: {
+    readonly publication: PublicationEpisodeMetadata;
+    readonly identity: ExplicitEpisodeIdentity;
+  }): Promise<EpisodeIdentityVerificationResult>;
+  extractEpisodeIdentity(input: {
+    readonly publication: PublicationEpisodeMetadata;
+    readonly seriesCatalog: readonly EpisodeIdentitySeriesCatalogEntry[];
+  }): Promise<EpisodeIdentityExtractionResult>;
 }

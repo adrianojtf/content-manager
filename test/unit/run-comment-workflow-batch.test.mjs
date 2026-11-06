@@ -28,7 +28,7 @@ function storedComment(externalCommentId, publicationId, socialAccountId = accou
   };
 }
 
-function createBatch({ comments = [], accounts = [account], publicationPage = null, syncResults = [], classifyFailureFor = null, generateFailureFor = null, partialGenerateFor = null } = {}) {
+function createBatch({ comments = [], accounts = [account], publicationPage = null, syncResults = [], classifyFailureFor = null, generateFailureFor = null, partialGenerateFor = null, concurrency = 8, classifyRateLimitedFor = null, rateLimitFailures = 1, evaluateHook = null, generateHook = null } = {}) {
   const calls = [];
   const accountsRepository = {
     listByTenant: async (scope) => { calls.push(['listAccounts', scope]); return accounts; },
@@ -57,16 +57,24 @@ function createBatch({ comments = [], accounts = [account], publicationPage = nu
       return result;
     },
   };
+  const rateLimitAttempts = new Map();
   const evaluate = {
     execute: async (input) => {
       calls.push(['classify', input]);
-      if (input.externalCommentId === classifyFailureFor) throw new IntelligenceProviderError('INTELLIGENCE_PROVIDER_RATE_LIMITED');
+      if (input.externalCommentId === classifyRateLimitedFor) {
+        const attempts = (rateLimitAttempts.get(input.externalCommentId) ?? 0) + 1;
+        rateLimitAttempts.set(input.externalCommentId, attempts);
+        if (attempts <= rateLimitFailures) throw new IntelligenceProviderError('INTELLIGENCE_PROVIDER_RATE_LIMITED');
+      }
+      if (input.externalCommentId === classifyFailureFor) throw new IntelligenceProviderError('INTELLIGENCE_PROVIDER_UNAVAILABLE');
+      if (evaluateHook) await evaluateHook(input);
       return { id: `analysis-${input.externalCommentId}` };
     },
   };
   const generate = {
     execute: async (input) => {
       calls.push(['generate', input]);
+      if (generateHook) await generateHook(input);
       if (input.externalCommentId === generateFailureFor) throw new IntelligenceProviderError('INTELLIGENCE_PROVIDER_UNAVAILABLE');
       const failures = input.externalCommentId === partialGenerateFor
         ? [{ language: 'en-US', errorCode: 'INTELLIGENCE_PROVIDER_RATE_LIMITED' }]
@@ -81,9 +89,12 @@ function createBatch({ comments = [], accounts = [account], publicationPage = nu
   };
   const tenant = { resolveTenantId: async () => tenantId };
   const batchIds = { generate: () => '60000000-0000-4000-8000-000000000001' };
+  const sleepCalls = [];
+  const sleep = async (milliseconds) => { sleepCalls.push(milliseconds); };
   return {
     calls,
-    batch: new RunCommentWorkflowBatch(accountsRepository, commentRepository, publications, sync, evaluate, generate, tenant, batchIds, now),
+    sleepCalls,
+    batch: new RunCommentWorkflowBatch(accountsRepository, commentRepository, publications, sync, evaluate, generate, tenant, batchIds, now, concurrency, sleep),
   };
 }
 
@@ -94,7 +105,7 @@ test('batch classification fans out per comment and preserves a partial provider
 
   assert.match(result.batchOperationId, /^[0-9a-f-]{36}$/i);
   assert.deepEqual(result.results.map(({ externalCommentId, status }) => [externalCommentId, status]), [['comment-1', 'SUCCEEDED'], ['comment-2', 'FAILED']]);
-  assert.equal(result.results[1].errorCode, 'INTELLIGENCE_PROVIDER_RATE_LIMITED');
+  assert.equal(result.results[1].errorCode, 'INTELLIGENCE_PROVIDER_UNAVAILABLE');
   const callsToEvaluator = calls.filter(([operation]) => operation === 'classify');
   assert.equal(callsToEvaluator.length, 2);
   assert.ok(callsToEvaluator.every(([, input]) => input.batchOperationId === result.batchOperationId));
@@ -221,6 +232,79 @@ test('batch workflow history queries all per-comment events by server-owned tena
   assert.deepEqual(await query.execute({ batchOperationId: '60000000-0000-4000-8000-000000000001' }), history);
   assert.deepEqual(calls, [[tenantId, '60000000-0000-4000-8000-000000000001', '2026-10-14T12:00:00.000Z']]);
   await assert.rejects(query.execute({ batchOperationId: 'not-a-uuid' }), (error) => error instanceof CommentWorkflowAuditError && error.code === 'COMMENT_WORKFLOW_BATCH_INPUT_INVALID');
+});
+
+test('batch classification never exceeds the configured concurrency limit', async () => {
+  const comments = Array.from({ length: 12 }, (_, index) => storedComment(`comment-${index}`, 'video-1'));
+  let inFlight = 0;
+  let peak = 0;
+  const evaluateHook = async () => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    inFlight -= 1;
+  };
+  const { batch } = createBatch({ comments, concurrency: 4, evaluateHook });
+
+  const result = await batch.execute({ operation: 'classify', scope: 'publication', accountId, publicationId: 'video-1' });
+
+  assert.equal(result.results.length, 12);
+  assert.ok(result.results.every((item) => item.status === 'SUCCEEDED'));
+  assert.equal(peak, 4);
+});
+
+test('batch classification returns results in comment order even when items finish out of order', async () => {
+  const comments = [storedComment('comment-1', 'video-1'), storedComment('comment-2', 'video-1'), storedComment('comment-3', 'video-1')];
+  const evaluateHook = async (input) => {
+    if (input.externalCommentId === 'comment-1') await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+  const { batch } = createBatch({ comments, concurrency: 3, evaluateHook });
+
+  const result = await batch.execute({ operation: 'classify', scope: 'publication', accountId, publicationId: 'video-1' });
+
+  assert.deepEqual(result.results.map((item) => item.externalCommentId), ['comment-1', 'comment-2', 'comment-3']);
+});
+
+test('batch classification retries a rate-limited item with backoff and then succeeds', async () => {
+  const comments = [storedComment('comment-1', 'video-1')];
+  const { batch, calls, sleepCalls } = createBatch({ comments, classifyRateLimitedFor: 'comment-1', rateLimitFailures: 2 });
+
+  const result = await batch.execute({ operation: 'classify', scope: 'publication', accountId, publicationId: 'video-1' });
+
+  assert.equal(result.results[0].status, 'SUCCEEDED');
+  assert.equal(result.results[0].artifactId, 'analysis-comment-1');
+  assert.deepEqual(sleepCalls, [1000, 2000]);
+  assert.equal(calls.filter(([operation]) => operation === 'classify').length, 3);
+});
+
+test('batch classification reports the item failed after exhausting rate-limit retries', async () => {
+  const comments = [storedComment('comment-1', 'video-1')];
+  const { batch, calls, sleepCalls } = createBatch({ comments, classifyRateLimitedFor: 'comment-1', rateLimitFailures: 10 });
+
+  const result = await batch.execute({ operation: 'classify', scope: 'publication', accountId, publicationId: 'video-1' });
+
+  assert.equal(result.results[0].status, 'FAILED');
+  assert.equal(result.results[0].errorCode, 'INTELLIGENCE_PROVIDER_RATE_LIMITED');
+  assert.deepEqual(sleepCalls, [1000, 2000, 4000]);
+  assert.equal(calls.filter(([operation]) => operation === 'classify').length, 4);
+});
+
+test('batch generation runs comments concurrently under the same limit', async () => {
+  const comments = Array.from({ length: 6 }, (_, index) => storedComment(`comment-${index}`, 'video-1'));
+  let inFlight = 0;
+  let peak = 0;
+  const generateHook = async () => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    inFlight -= 1;
+  };
+  const { batch } = createBatch({ comments, concurrency: 2, generateHook });
+
+  const result = await batch.execute({ operation: 'generate', scope: 'publication', accountId, publicationId: 'video-1' });
+
+  assert.equal(result.results.length, 6);
+  assert.equal(peak, 2);
 });
 
 test('batch operation rejects unsupported send operations and invalid scope combinations', async () => {

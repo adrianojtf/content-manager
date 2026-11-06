@@ -6,7 +6,7 @@
 
 ## 1. Scope
 
-Evolve how `seriesName`/`seasonNumber`/`episodeNumber`/`episodeCode` are derived from imported publication metadata. Today identity is a pure function of `title` + `description` computed by deterministic regex/heuristics (`extractExplicitEpisodeIdentity`), which fails on captions outside the expected formats and required the hard-coded `Obsidiana` arc rule.
+Evolve how `seriesName`/`seasonNumber`/`episodeNumber`/`episodeCode` are derived from imported publication metadata. Today identity is a pure function of `title` + `description` computed by deterministic regex/heuristics (`extractExplicitEpisodeIdentity`), which fails on captions outside the expected formats and previously required a hard-coded arc rule (the `Obsidiana` rule, removed in increment 1 — deterministic extraction is now fully generic).
 
 This proposal introduces a **cascade**: deterministic rules stay the primary path, JEV verifies the deterministic result, an LLM extracts identity only on rejection or insufficient confidence, and creator-approved LLM extractions feed a tenant-scoped learned-pattern table that reduces future model calls.
 
@@ -17,7 +17,8 @@ flowchart LR
     B -- no identity --> P{Learned pattern match?}
     P -- match --> V
     P -- miss --> L[LLM extraction<br/>with tenant series catalog]
-    V -- VALID --> S[Pending suggestion<br/>identity_source = RULES / LEARNED_PATTERN]
+    V -- VALID --> S[Pending suggestion<br/>identity_source = JEV_VERIFIED / LEARNED_PATTERN]
+    V -- UNCERTAIN ≥ threshold or provider failure --> S
     V -- INVALID or low-confidence UNCERTAIN --> L
     L --> S2[Pending suggestion<br/>identity_source = JEV_EXTRACTED]
     S & S2 --> C[Creator confirmation — unchanged workflow]
@@ -46,11 +47,11 @@ New choice question `episode_identity_verification` sent with the untrusted text
 - `INVALID` — the text contradicts or does not support the identity.
 - `UNCERTAIN` — insufficient text to decide.
 
-`VALID` accepts the deterministic identity. `INVALID`, or `UNCERTAIN` below the configured confidence threshold, escalates to step 3. The threshold is a named application constant, not user input.
+`VALID` accepts the deterministic identity and records `identity_source = JEV_VERIFIED` (deterministic identity confirmed by the model). `INVALID`, or `UNCERTAIN` below the configured confidence threshold, escalates to step 3. `UNCERTAIN` at or above the threshold — and any provider failure during verification — keeps the deterministic identity as `RULES`. The threshold is the named application constant `uncertainVerificationConfidenceThreshold` (currently `0.6`), not user input.
 
 ### Step 3 — LLM extraction with series catalog
 
-Only on escalation, a structured question `episode_identity_extraction` receives the text **and** the tenant series catalog projection: `{ name, aliases, seasonMode, knownSeasonNumbers }` per series — never metrics, counts, or credentials. The model returns schema-validated JSON:
+Only on escalation, a structured `json` question `episode_identity_extraction` receives the text **and** the tenant series catalog projection: `{ id, name, aliases, seasonMode, knownSeasonNumbers }` per series — never metrics, counts, or credentials. The model returns schema-validated JSON:
 
 ```json
 {
@@ -66,7 +67,7 @@ Only on escalation, a structured question `episode_identity_extraction` receives
 
 ## 4. Identity Persistence Change
 
-Add `identity_source` (`RULES | LEARNED_PATTERN | JEV_VERIFIED | JEV_EXTRACTED`) and the extracted identity payload to `analytics_episode_suggestions` in a new migration. `GetEpisodeReview` uses the persisted identity when present; it re-derives identity only for legacy rows and `RULES`-path rows so a text change still revokes stale deterministic identities. Model-extracted identities are immutable post-persist — a changed source fingerprint produces a new revision, matching the existing decision-history rule.
+Add `identity_source` (`RULES | LEARNED_PATTERN | JEV_VERIFIED | JEV_EXTRACTED`) and `identity_audit_json` (catalog size, verification verdict/confidence, extraction payload or a stable failure code) to `analytics_episode_suggestions` in a new migration; the extracted identity itself rides the existing `identity_json` column. `GetEpisodeReview` uses the persisted identity when present; it re-derives identity only for legacy rows and `RULES`/`JEV_VERIFIED` rows so a text change still revokes stale deterministic identities. Model-extracted identities are immutable post-persist — a changed source fingerprint produces a new revision, matching the existing decision-history rule — and `approveGroup` validates group consistency against the persisted `identity_json` for `JEV_EXTRACTED`/`LEARNED_PATTERN` rows instead of re-deriving.
 
 ## 5. Learned Identity Patterns
 
@@ -111,7 +112,12 @@ Rules:
 - **E2E:** deterministic doubles driving each cascade branch; a rejected deterministic identity replaced by an LLM extraction that maps to an existing series; approval of an LLM-extracted identity creates a pattern; a later publication with the same signature resolves deterministically without a model call.
 - **AI:** deterministic stub for JEV verification/extraction; never live model output as oracle.
 
-## 10. Open Decisions
+## 10. Increment Status
+
+- **Increment 1 (implemented):** deterministic extraction → `episode_identity_verification` → `episode_identity_extraction` with the tenant series catalog; `identity_source` + `identity_audit_json` persisted; `GetEpisodeReview`/`approveGroup` honor persisted model-extracted identities; per-source failure isolation. Learned-pattern table, pattern writes on approval, and `LEARNED_PATTERN` matching are **not** implemented — the `LEARNED_PATTERN` enum value is reserved.
+- **Later increments:** `analytics_episode_identity_patterns` table and upsert inside the approval transaction; learned-pattern deterministic lookup before LLM escalation.
+
+## 11. Open Decisions
 
 - Confidence threshold value and whether it is global or per-platform.
 - Whether learned patterns apply only after N creator approvals or immediately after the first.

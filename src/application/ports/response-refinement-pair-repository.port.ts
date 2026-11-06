@@ -7,6 +7,7 @@ export interface AppendResponseRefinementPairInput {
   readonly finalText: string;
   readonly aiProvider: string;
   readonly aiModel: string;
+  readonly promptVersion: string | null;
   readonly aiConfidence: number;
   readonly aiRationale: string | null;
   readonly intendedTone: string;

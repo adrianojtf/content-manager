@@ -66,8 +66,16 @@ export class CreatorDeskApi {
     return this.request(`/analytics/episodes/review${query}`);
   }
 
+  getAnalyticsDashboard() {
+    return this.request('/analytics/dashboard');
+  }
+
   createAnalyticsSeries(input) {
     return this.request('/analytics/series', { method: 'POST', body: input });
+  }
+
+  listAnalyticsSeriesEpisodes(seriesId) {
+    return this.request(`/analytics/series/${encode(seriesId)}/episodes`);
   }
 
   getAvailableEpisodePublications(platform) {
@@ -77,6 +85,14 @@ export class CreatorDeskApi {
 
   createManualAnalyticsEpisode(input) {
     return this.request('/analytics/episodes/manual', { method: 'POST', body: input });
+  }
+
+  updateAnalyticsEpisode(episodeId, input) {
+    return this.request(`/analytics/episodes/${encode(episodeId)}`, { method: 'PUT', body: input });
+  }
+
+  updateEpisodePublicationLink(episodeId, input) {
+    return this.request(`/analytics/episodes/${encode(episodeId)}/publications`, { method: 'PUT', body: input });
   }
 
   refreshEpisodeSuggestions() {

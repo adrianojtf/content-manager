@@ -67,6 +67,25 @@ export function readNoulAnswer(result: TypeSafeSystemOneOutput, questionId: stri
   return { probability: unitScore(answer.noul) };
 }
 
+export interface TypeSafeJsonResult {
+  readonly value: Readonly<Record<string, unknown>>;
+  readonly confidence: number | null;
+}
+
+export function readJsonAnswer(result: TypeSafeSystemOneOutput, questionId: string): TypeSafeJsonResult {
+  const answer = answerFor(result, questionId);
+  if (answer.type !== 'json' || !isRecord(answer.value)) {
+    throw invalidResponse();
+  }
+  let confidence: number | null = null;
+  if (answer.confidence !== undefined && answer.confidence !== null) {
+    confidence = unitScore(answer.confidence);
+  } else if (answer.value.confidence !== undefined && answer.value.confidence !== null) {
+    confidence = unitScore(answer.value.confidence);
+  }
+  return { value: answer.value, confidence };
+}
+
 export function summarizeConfidence(...signals: readonly { readonly confidence: number }[]): number {
   if (signals.length === 0) throw invalidResponse();
   return Math.min(...signals.map((signal) => signal.confidence));

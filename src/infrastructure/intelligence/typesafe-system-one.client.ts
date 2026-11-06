@@ -18,6 +18,11 @@ export type TypeSafeQuestion =
     readonly type: 'noul';
     readonly instructions: string;
     readonly criteria?: { readonly true: string; readonly false: string };
+  }
+  | {
+    readonly type: 'json';
+    readonly instructions: string;
+    readonly schema: Readonly<Record<string, unknown>>;
   };
 
 export interface TypeSafeSystemOneInput {

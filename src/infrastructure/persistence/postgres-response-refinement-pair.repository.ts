@@ -17,6 +17,7 @@ interface AiResponseEditPairRow extends Record<string, unknown> {
   final_text: string;
   ai_provider: string;
   ai_model: string;
+  prompt_version: string | null;
   ai_confidence: number;
   ai_rationale: string | null;
   intended_tone: string;
@@ -44,19 +45,19 @@ export class PostgresResponseRefinementPairRepository implements ResponseRefinem
     await this.database.query(
       `INSERT INTO ai_response_edit_pairs (
          id, tenant_id, social_account_id, platform, language, ai_text, final_text,
-         ai_provider, ai_model, ai_confidence, ai_rationale, intended_tone, tone_profile_json,
+         ai_provider, ai_model, prompt_version, ai_confidence, ai_rationale, intended_tone, tone_profile_json,
          revision_count, last_edit_reason, evaluation_json, analysis_labels_json,
          manual_reply_attempt_id, recorded_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        ON CONFLICT (manual_reply_attempt_id) DO NOTHING`,
       [randomUUID(), input.tenantId, input.socialAccountId, input.platform, input.language,
-        input.aiText, input.finalText, input.aiProvider, input.aiModel, input.aiConfidence,
+        input.aiText, input.finalText, input.aiProvider, input.aiModel, input.promptVersion, input.aiConfidence,
         input.aiRationale, input.intendedTone, toneProfile, input.revisionCount, input.lastEditReason,
         evaluation, analysisLabels, input.manualReplyAttemptId, input.recordedAt],
     );
     const { rows } = await this.database.query<AiResponseEditPairRow>(
       `SELECT id, tenant_id, social_account_id, platform, language, ai_text, final_text,
-              ai_provider, ai_model, ai_confidence, ai_rationale, intended_tone, tone_profile_json,
+              ai_provider, ai_model, prompt_version, ai_confidence, ai_rationale, intended_tone, tone_profile_json,
               revision_count, last_edit_reason, evaluation_json, analysis_labels_json,
               manual_reply_attempt_id, recorded_at
        FROM ai_response_edit_pairs WHERE manual_reply_attempt_id = $1`,
@@ -91,6 +92,7 @@ export class PostgresResponseRefinementPairRepository implements ResponseRefinem
       finalText: row.final_text,
       aiProvider: row.ai_provider,
       aiModel: row.ai_model,
+      promptVersion: row.prompt_version,
       aiConfidence: row.ai_confidence,
       aiRationale: row.ai_rationale,
       intendedTone: row.intended_tone,

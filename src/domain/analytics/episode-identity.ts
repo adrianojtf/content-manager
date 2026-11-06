@@ -1,6 +1,9 @@
 export const publicationEpisodeClassifications = ['EPISODE', 'NOT_EPISODE', 'UNCERTAIN'] as const;
 export type PublicationEpisodeClassification = typeof publicationEpisodeClassifications[number];
 
+export const episodeIdentitySources = ['RULES', 'LEARNED_PATTERN', 'JEV_VERIFIED', 'JEV_EXTRACTED'] as const;
+export type EpisodeIdentitySource = typeof episodeIdentitySources[number];
+
 export interface ExplicitEpisodeIdentity {
   readonly seriesName: string | null;
   readonly seasonNumber: number | null;
@@ -89,9 +92,12 @@ function seriesNameAroundEpisodeMarker(text: string, start: number, end: number)
 
 function standaloneSeriesName(texts: readonly string[]): string | null {
   const candidates: { readonly name: string; readonly confidence: number }[] = [];
-  const add = (value: string | undefined, confidence: number) => {
+  const characterPairName = /^\S+\s+(?:e|and|y)\s+\S+$/i;
+  const add = (value: string | undefined, confidence: number, allowSingleWord = false) => {
     const name = value ? cleanSeriesNameCandidate(value) : null;
-    if (name && normalizeSeriesIdentity(name).split(' ').length >= 2) candidates.push({ name, confidence });
+    if (!name || normalizeSeriesIdentity(name).split(' ').length < (allowSingleWord ? 1 : 2)) return;
+    const adjusted = characterPairName.test(name.trim()) ? confidence - 3 : confidence;
+    candidates.push({ name, confidence: adjusted });
   };
   const genericTagWords = new Set([
     'novelaria', 'novela', 'novelaia', 'romance', 'romantica', 'romantico', 'comedia',
@@ -101,13 +107,15 @@ function standaloneSeriesName(texts: readonly string[]): string | null {
   for (const text of texts) {
     for (const line of text.split(/\r?\n/)) {
       const searchableLine = line.replace(/#[\p{L}\p{N}_]+/gu, ' ');
-      const namedSeries = searchableLine.match(/(?:bastidores de|acompanhe|assista ao|vem conhecer|conhecer|estreia(?:\s+hoje)?\s*[:\-]?|reta final de|s[eé]rie\s*:\s*|novela\s*:\s*|cap[ií]tulos? de|epis[oó]dios? de)\s+(.+?)(?=\s*(?:[,.;!?*]|#|às?\s+\d{1,2}|todos os epis[oó]dios|todos os cap[ií]tulos|a novelinha|a novela|aqui na|$))/i);
-      if (namedSeries) add(namedSeries[1], 9);
+      const namedSeries = searchableLine.match(/(?:bastidores de|acompanhe|assista ao|vem conhecer|conhecer|estreia(?:\s+hoje)?\s*[:\-]?|reta final de|s[eé]rie\s*:\s*|novela\s*:\s*|cap[ií]tulos? de|epis[oó]dios? de)\s+(.+?)(?=\s*(?:[,.;!?*]|#|às?\s+\d{1,2}|amanh[ãa](?![\p{L}\p{N}_])|hoje\b|depois\b|todos os epis[oó]dios|todos os cap[ií]tulos|a novelinha|a novela|aqui na|$))/iu);
+      if (namedSeries && /^[\p{Lu}\p{N}]/u.test(namedSeries[1].trim())) add(namedSeries[1], 9, true);
 
       const beforePipe = line.match(/^\s*[\p{P}\p{S}\s]*?(.+?)\s*\|\s*.+$/u);
       if (beforePipe) add(beforePipe[1], 7);
 
-      for (const [, tag] of line.matchAll(/#([\p{L}\p{N}_]+)/gu)) {
+      const tags = [...line.matchAll(/#([\p{L}\p{N}_]+)/gu)].map((match) => match[1]);
+      const isNonGenericTag = (value: string) => !genericTagWords.has(normalizeSeriesIdentity(value));
+      for (const tag of tags) {
         const spaced = tag
           .replace(/([a-zà-öø-ÿ])([A-Z])/g, '$1 $2')
           .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2');
@@ -115,6 +123,9 @@ function standaloneSeriesName(texts: readonly string[]): string | null {
         const normalizedWords = words.map((word) => normalizeSeriesIdentity(word));
         if (words.length >= 3 && !normalizedWords.every((word) => genericTagWords.has(word))) {
           add(spaced, 8 + words.length / 100);
+        } else if (words.length === 1 && !genericTagWords.has(normalizedWords[0])
+          && tags.some((other) => other !== tag && isNonGenericTag(other))) {
+          add(spaced, 6.5, true);
         }
       }
     }
@@ -124,53 +135,11 @@ function standaloneSeriesName(texts: readonly string[]): string | null {
   return candidates[0]?.name ?? null;
 }
 
-function namedObsidianaSeason(texts: readonly string[]): number | null {
-  const hasNamedArc = texts.some((text) => (
-    /\bobsidiana\s*[:|—–-]\s*o\s+legado\b/i.test(text)
-    || /#obsidianaolegado\b/i.test(text)
-    || text.split(/\r?\n/).some((line) => (
-      /^[\p{P}\p{S}\p{M}\p{Cf}\s]*obsidiana\s+o\s+legado\b/iu.test(line)
-    ))
-  ));
-  const hasSeparateArcTags = texts.some((text) => /#obsidiana\b/i.test(text))
-    && texts.some((text) => /#olegado\b/i.test(text));
-  if (hasNamedArc || hasSeparateArcTags) return 2;
-  if (texts.some((text) => /\b1[ªa]\s*temporada\s*[—–:|]\s*obsidiana\b/i.test(text))) return 1;
-  return null;
-}
-
-function hasObsidianaSeriesIdentity(texts: readonly string[]): boolean {
-  if (texts.some((text) => /#obsidiana(?:\b|olegado\b)/i.test(text))) return true;
-  return texts.some((text) => text.split(/\r?\n/).some((line) => {
-    const normalizedLine = line.trim();
-    const root = normalizedLine.match(/^[\p{P}\p{S}\p{M}\p{Cf}\s]*obsidiana\b/iu);
-    if (!root) return false;
-    const remainder = normalizedLine.slice(root[0].length).trimStart();
-    return !remainder || /^[|:—–-]/.test(remainder) || /^\p{Lu}/u.test(remainder);
-  }));
-}
-
 export function extractExplicitEpisodeIdentity(
   title: string | null,
   description: string | null = null,
 ): ExplicitEpisodeIdentity {
-  const texts = [title, description].filter((value): value is string => Boolean(value?.trim()));
-  const identity = extractEpisodeIdentityFromText(title, description);
-  const namedSeasonNumber = namedObsidianaSeason(texts);
-  if (namedSeasonNumber !== null) {
-    return {
-      ...identity,
-      seriesName: 'Obsidiana',
-      seasonNumber: identity.seasonStatus === 'NUMBERED' && identity.seasonNumber !== null
-        ? identity.seasonNumber
-        : namedSeasonNumber,
-      seasonStatus: 'NUMBERED',
-    };
-  }
-  if (hasObsidianaSeriesIdentity(texts)) {
-    return { ...identity, seriesName: 'Obsidiana' };
-  }
-  return identity;
+  return extractEpisodeIdentityFromText(title, description);
 }
 
 function extractEpisodeIdentityFromText(
@@ -267,13 +236,35 @@ function extractEpisodeIdentityFromText(
   };
 }
 
+export function hasExplicitEpisodeIdentity(identity: ExplicitEpisodeIdentity): boolean {
+  return Boolean(identity.episodeCode)
+    || (Boolean(identity.seriesName) && identity.episodeNumber !== null);
+}
+
+const insignificantConnectorWords = new Set([
+  'de', 'do', 'da', 'dos', 'das', 'e', 'o', 'a', 'os', 'as', 'um', 'uma',
+  'of', 'the', 'an', 'el', 'la', 'los', 'las',
+]);
+
 export function normalizeSeriesIdentity(value: string): string {
   return value.normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLocaleLowerCase('en-US')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
-    .replace(/\s+/g, ' ');
+    .split(/\s+/)
+    .filter((word) => word && !insignificantConnectorWords.has(word))
+    .join(' ');
+}
+
+export function generateCanonicalEpisodeCode(
+  seriesId: string,
+  seasonNumber: number | null,
+  episodeNumber: number,
+): string {
+  const seriesKey = seriesId.replace(/[^a-z0-9]/gi, '').toUpperCase();
+  const seasonPart = seasonNumber === null ? '' : `-S${String(seasonNumber).padStart(2, '0')}`;
+  return `EP-${seriesKey}${seasonPart}-E${String(episodeNumber).padStart(2, '0')}`;
 }
 
 export function groupEpisodePublicationSuggestions(

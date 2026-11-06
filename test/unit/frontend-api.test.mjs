@@ -336,6 +336,7 @@ test('episode review API refreshes imported metadata and sends only creator revi
 
   await api.getEpisodeReview();
   await api.getEpisodeReview('SERIES');
+  await api.listAnalyticsSeriesEpisodes('series/one');
   await api.refreshEpisodeSuggestions();
   await api.confirmEpisodeSetupSeries({
     suggestionIds: ['suggestion-1', 'suggestion-2'],
@@ -354,6 +355,7 @@ test('episode review API refreshes imported metadata and sends only creator revi
   assert.deepEqual(calls.map(([url, options]) => [url, options.method, options.body]), [
     ['/analytics/episodes/review', 'GET', undefined],
     ['/analytics/episodes/review?stage=SERIES', 'GET', undefined],
+    ['/analytics/series/series%2Fone/episodes', 'GET', undefined],
     ['/analytics/episodes/review/refresh', 'POST', undefined],
     ['/analytics/episodes/setup/series/confirm', 'POST', JSON.stringify({
       suggestionIds: ['suggestion-1', 'suggestion-2'],
@@ -386,7 +388,6 @@ test('manual episode API creates series, loads local unlinked publications, and 
     seriesId: 'series-1',
     seasonNumber: 2,
     episodeNumber: 20,
-    episodeCode: 'OBS-S02-E20',
     productionCost: null,
     productionTimeSeconds: null,
     publicationSelections: [
@@ -398,11 +399,75 @@ test('manual episode API creates series, loads local unlinked publications, and 
   await api.createAnalyticsSeries({ name: 'Obsidiana', aliases: [], seasonMode: 'SEASONAL' });
   await api.getAvailableEpisodePublications('instagram');
   await api.createManualAnalyticsEpisode(episodeInput);
+  await api.updateAnalyticsEpisode('episode/1', {
+    seriesId: 'series-1',
+    seasonNumber: 2,
+    episodeNumber: 21,
+    episodeCode: 'OBS-S02-E21',
+    productionCost: null,
+    productionTimeSeconds: null,
+  });
 
   assert.deepEqual(calls.map(([url, options]) => [url, options.method, options.body]), [
     ['/analytics/series', 'POST', JSON.stringify({ name: 'Obsidiana', aliases: [], seasonMode: 'SEASONAL' })],
     ['/analytics/episodes/manual/publications?platform=instagram', 'GET', undefined],
     ['/analytics/episodes/manual', 'POST', JSON.stringify(episodeInput)],
+    ['/analytics/episodes/episode%2F1', 'PUT', JSON.stringify({
+      seriesId: 'series-1',
+      seasonNumber: 2,
+      episodeNumber: 21,
+      episodeCode: 'OBS-S02-E21',
+      productionCost: null,
+      productionTimeSeconds: null,
+    })],
+  ]);
+});
+
+test('episode publication link API submits replacement or removal', async () => {
+  const calls = [];
+  const api = new CreatorDeskApi({
+    fetcher: async (url, options) => {
+      calls.push([url, options]);
+      return jsonResponse({ replaced: true });
+    },
+  });
+
+  await api.updateEpisodePublicationLink('episode-1', {
+    socialAccountId: 'account-1',
+    externalPublicationId: 'old-post',
+    next: { socialAccountId: 'account-1', externalPublicationId: 'new-post' },
+  });
+  await api.updateEpisodePublicationLink('episode-1', {
+    socialAccountId: 'account-1',
+    externalPublicationId: 'old-post',
+    next: null,
+  });
+
+  assert.deepEqual(calls.map(([url, options]) => [url, options.method, options.body]), [
+    ['/analytics/episodes/episode-1/publications', 'PUT', JSON.stringify({
+      socialAccountId: 'account-1', externalPublicationId: 'old-post',
+      next: { socialAccountId: 'account-1', externalPublicationId: 'new-post' },
+    })],
+    ['/analytics/episodes/episode-1/publications', 'PUT', JSON.stringify({
+      socialAccountId: 'account-1', externalPublicationId: 'old-post', next: null,
+    })],
+  ]);
+});
+
+test('dashboard API reads the server-calculated analytics snapshot', async () => {
+  const calls = [];
+  const api = new CreatorDeskApi({
+    fetcher: async (url, options) => {
+      calls.push([url, options]);
+      return jsonResponse({ seriesCount: 2, episodeCount: 8 });
+    },
+  });
+
+  const dashboard = await api.getAnalyticsDashboard();
+
+  assert.deepEqual(dashboard, { seriesCount: 2, episodeCount: 8 });
+  assert.deepEqual(calls.map(([url, options]) => [url, options.method]), [
+    ['/analytics/dashboard', 'GET'],
   ]);
 });
 

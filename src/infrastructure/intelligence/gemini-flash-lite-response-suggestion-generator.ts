@@ -28,6 +28,7 @@ interface SuggestionTextOutput {
 }
 
 const defaultModel = 'gemini-3.5-flash-lite';
+const promptVersion = 'gemini-response-v1';
 const modelOutputSchema = {
   type: 'OBJECT',
   properties: {
@@ -128,6 +129,7 @@ export class GeminiFlashLiteResponseSuggestionGenerator implements ResponseSugge
       intendedTone: output.intendedTone,
       provider: 'GEMINI',
       model,
+      promptVersion,
       confidence: output.confidence,
       rationale: output.rationale || null,
     };

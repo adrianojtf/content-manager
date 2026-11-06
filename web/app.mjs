@@ -57,6 +57,7 @@ import {
   renderAIProviderSettings,
   renderAppearanceSettings,
   renderBulkReplyDialog,
+  renderBulkReplyRow,
   renderAccountOptions,
   renderConnectionSettings,
   renderEmptyState,
@@ -69,6 +70,14 @@ import {
 } from './view.mjs';
 
 const $ = (selector) => document.querySelector(selector);
+const lastRenderedMarkup = new Map();
+
+function setInnerHtmlIfChanged(element, markup) {
+  if (!element || lastRenderedMarkup.get(element) === markup) return false;
+  lastRenderedMarkup.set(element, markup);
+  element.innerHTML = markup;
+  return true;
+}
 const toneDefaults = Object.freeze({ primaryTone: 'FRIENDLY', modifiers: [], customNote: null });
 const verifiedScheduleDays = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 const apiBaseUrl = document.querySelector('meta[name="api-base-url"]')?.content ?? '';
@@ -150,6 +159,12 @@ const state = {
     loadingMore: false,
     error: null,
   },
+  analytics: {
+    loading: false,
+    error: null,
+    report: null,
+    rankingWindow: 30,
+  },
   episodeReview: {
     loading: false,
     refreshing: false,
@@ -163,6 +178,28 @@ const state = {
     unmatched: [],
     showUnidentifiedSeries: false,
     showUnmatchedEpisodes: false,
+    recommendationsOpen: false,
+    seriesPage: 0,
+    selectedSeriesId: null,
+    editingEpisodeId: null,
+    editingLink: null,
+    seriesEpisodes: [],
+    seriesEpisodesLoading: false,
+    seriesEpisodesError: false,
+    seriesPendingSuggestions: [],
+    seriesPendingSuggestionsLoading: false,
+    seriesPendingSuggestionsError: false,
+    seriesPendingEpisodeSelection: [],
+    seriesPendingEpisodeNumberDrafts: {},
+    seriesPendingEpisodeSaving: false,
+    seriesSuggestionModal: {
+      open: false,
+      loading: false,
+      error: false,
+      saving: false,
+      candidates: [],
+      selectedSuggestionIds: [],
+    },
     refreshResult: null,
     manualSeriesOpen: false,
     manualEpisodeOpen: false,
@@ -311,6 +348,54 @@ function renderEpisodeReview() {
   $('#episodesScreen').innerHTML = renderEpisodeReviewScreen(state.episodeReview);
 }
 
+let bulkFlushScheduled = false;
+const progressRenderInterval = 120;
+const bulkDirtyRows = new Set();
+
+function scheduleBulkProgressRender(commentId) {
+  if (commentId) bulkDirtyRows.add(commentId);
+  if (bulkFlushScheduled) return;
+  bulkFlushScheduled = true;
+  setTimeout(() => {
+    bulkFlushScheduled = false;
+    flushBulkProgress();
+  }, progressRenderInterval);
+}
+
+function bulkProgressText(bulk) {
+  if (!bulk.progress) return t(bulk.status === 'sending' ? 'bulkReplies.sending' : 'bulkReplies.generating');
+  return t(bulk.status === 'sending' ? 'bulkReplies.sendingProgress' : 'bulkReplies.progress', {
+    current: formatNumber(bulk.progress.current),
+    total: formatNumber(bulk.progress.total),
+    comment: bulk.progress.commentName ?? '',
+  });
+}
+
+function flushBulkProgress() {
+  const bulk = state.bulkReply;
+  const dialog = $('#bulkReplyDialog');
+  if (!bulk?.open || !dialog || dialog.hidden) {
+    bulkDirtyRows.clear();
+    return;
+  }
+  const model = { ...bulk, sendableCount: eligibleSemiAutomaticReplyRows(bulk.rows).length };
+  const template = document.createElement('template');
+  for (const commentId of bulkDirtyRows) {
+    const row = findBulkRow(bulk, commentId);
+    const element = dialog.querySelector(`.bulk-reply-row[data-comment-id="${CSS.escape(commentId)}"]`);
+    if (!row || !element) continue;
+    template.innerHTML = renderBulkReplyRow(row, model);
+    const next = template.content.firstElementChild;
+    if (next && element.outerHTML !== next.outerHTML) element.replaceWith(next);
+  }
+  bulkDirtyRows.clear();
+  const progressText = bulkProgressText(bulk);
+  const progressElement = dialog.querySelector('.bulk-progress-bar span:last-child');
+  if (progressElement && progressElement.textContent !== progressText) {
+    progressElement.textContent = progressText;
+  }
+}
+
 function render() {
   const settingsVisible = state.screen === 'connections';
   const reportVisible = state.screen === 'replies-report';
@@ -327,11 +412,17 @@ function render() {
   const bulkModel = state.bulkReply
     ? { ...state.bulkReply, sendableCount: eligibleSemiAutomaticReplyRows(state.bulkReply.rows).length }
     : state.bulkReply;
-  replaceHtmlPreservingScroll(
-    bulkDialog,
-    settingsVisible || reportVisible || episodesVisible || dashboardVisible ? '' : renderBulkReplyDialog(bulkModel),
-    () => bulkDialog.querySelector('.bulk-dialog-content'),
-  );
+  const bulkMarkup = settingsVisible || reportVisible || episodesVisible || dashboardVisible
+    ? ''
+    : renderBulkReplyDialog(bulkModel);
+  if (lastRenderedMarkup.get(bulkDialog) !== bulkMarkup) {
+    lastRenderedMarkup.set(bulkDialog, bulkMarkup);
+    replaceHtmlPreservingScroll(
+      bulkDialog,
+      bulkMarkup,
+      () => bulkDialog.querySelector('.bulk-dialog-content'),
+    );
+  }
   restoreBulkDialogFocus(bulkDialog, bulkDialogFocus);
   bulkDialog.hidden = settingsVisible || reportVisible || episodesVisible || dashboardVisible || !state.bulkReply?.open;
   $('#breadcrumbCurrent').textContent = t(settingsVisible
@@ -373,7 +464,12 @@ function render() {
     return;
   }
   if (dashboardVisible) {
-    $('#dashboardScreen').innerHTML = renderAnalyticsDashboard();
+    $('#dashboardScreen').innerHTML = renderAnalyticsDashboard({
+      report: state.analytics.report,
+      loading: state.analytics.loading,
+      error: Boolean(state.analytics.error),
+      rankingWindow: state.analytics.rankingWindow,
+    });
     return;
   }
   ensureSelectedAccount();
@@ -383,7 +479,7 @@ function render() {
     network,
     summaryPlatforms.get(network)?.unansweredComments ?? null,
   ]));
-  tabs.innerHTML = renderSocialTabs(state.activeNetwork, networkCounts);
+  setInnerHtmlIfChanged(tabs, renderSocialTabs(state.activeNetwork, networkCounts));
 
   const accounts = activeAccounts();
   const pageSyncing = state.busy.has('page-sync');
@@ -391,7 +487,7 @@ function render() {
   const pageInteractionLocked = pageSyncing || pageLoading || state.searchLoading;
   tabs.querySelectorAll('[data-network]').forEach((tab) => { tab.disabled = pageInteractionLocked; });
   const accountFilter = $('#accountFilter');
-  accountFilter.innerHTML = renderAccountOptions(accounts, state.selectedAccountId);
+  setInnerHtmlIfChanged(accountFilter, renderAccountOptions(accounts, state.selectedAccountId));
   accountFilter.disabled = accounts.length === 0 || pageInteractionLocked;
   const scheduleToggle = $('#verifiedReleaseScheduleToggle');
   scheduleToggle.disabled = pageInteractionLocked;
@@ -405,11 +501,11 @@ function render() {
   const selectionStart = typeof focusedScheduleControl?.selectionStart === 'number' ? focusedScheduleControl.selectionStart : null;
   const selectionEnd = typeof focusedScheduleControl?.selectionEnd === 'number' ? focusedScheduleControl.selectionEnd : null;
   schedulePanel.hidden = !state.verifiedSchedule.open;
-  schedulePanel.innerHTML = renderVerifiedReleaseSchedulePanel({
+  setInnerHtmlIfChanged(schedulePanel, renderVerifiedReleaseSchedulePanel({
     ...state.verifiedSchedule,
     accountSelected: Boolean(state.selectedAccountId),
     canSave: canSaveVerifiedSchedule(),
-  });
+  }));
   if (focusedScheduleId || focusedScheduleDay || focusedScheduleRole || focusedScheduleAction) {
     const selector = focusedScheduleDay
       ? `[data-day-of-week="${focusedScheduleDay}"]`
@@ -476,10 +572,10 @@ function render() {
   const syncText = formatLastSync(selectedComments);
   const publicationCount = t(totalForNetwork === 1 ? 'stats.networkSummary.one' : 'stats.networkSummary.other', { count: formatNumber(totalForNetwork) });
   $('#networkSubtitle').textContent = `${state.searchLoading ? `${t('toolbar.searching')} · ` : ''}${publicationCount} · ${syncText}`;
-  $('#stats').innerHTML = renderStats({
+  setInnerHtmlIfChanged($('#stats'), renderStats({
     summary: state.commentSummary?.totals ?? null,
     unavailable: state.commentSummaryError,
-  });
+  }));
 
   const viewModel = { ...state, comments: filtered.comments };
   const pageControls = activeAccounts()
@@ -527,7 +623,10 @@ function render() {
     }
   } else {
     contentList.querySelector('.page-sync-overlay')?.remove();
-    replaceHtmlPreservingScroll(contentList, contentMarkup, () => document.scrollingElement);
+    if (lastRenderedMarkup.get(contentList) !== contentMarkup) {
+      lastRenderedMarkup.set(contentList, contentMarkup);
+      replaceHtmlPreservingScroll(contentList, contentMarkup, () => document.scrollingElement);
+    }
   }
 
 }
@@ -769,6 +868,22 @@ async function loadSentRepliesReport({ cursor = null, append = false } = {}) {
   }
 }
 
+async function loadAnalyticsDashboard() {
+  const dashboard = state.analytics;
+  dashboard.loading = true;
+  dashboard.error = null;
+  render();
+  try {
+    dashboard.report = await api.getAnalyticsDashboard();
+  } catch (error) {
+    dashboard.error = error;
+    dashboard.report = null;
+  } finally {
+    dashboard.loading = false;
+    render();
+  }
+}
+
 async function loadSentRepliesReportAccounts() {
   try {
     state.sentRepliesReport.accounts = await api.listAccounts();
@@ -812,6 +927,293 @@ async function loadEpisodeReview({ showLoading = true, autoSync = false, stage }
   } finally {
     review.loading = false;
     if (state.screen === 'episodes') render();
+  }
+}
+
+async function loadSeriesEpisodes() {
+  const review = state.episodeReview;
+  const seriesId = review.selectedSeriesId;
+  if (!seriesId) return;
+  review.seriesEpisodesLoading = true;
+  review.seriesEpisodesError = false;
+  render();
+  try {
+    const episodes = await api.listAnalyticsSeriesEpisodes(seriesId);
+    if (review.selectedSeriesId === seriesId) review.seriesEpisodes = Array.isArray(episodes) ? episodes : [];
+  } catch {
+    if (review.selectedSeriesId === seriesId) {
+      review.seriesEpisodes = [];
+      review.seriesEpisodesError = true;
+    }
+  } finally {
+    if (review.selectedSeriesId === seriesId) {
+      review.seriesEpisodesLoading = false;
+      if (state.screen === 'episodes') render();
+    }
+  }
+}
+
+async function loadSeriesPendingSuggestions() {
+  const review = state.episodeReview;
+  const seriesId = review.selectedSeriesId;
+  if (!seriesId) return;
+  review.seriesPendingSuggestionsLoading = true;
+  review.seriesPendingSuggestionsError = false;
+  render();
+  try {
+    const result = await api.getEpisodeReview('SERIES');
+    if (review.selectedSeriesId === seriesId) {
+      review.seriesPendingSuggestions = (result.seriesProposals ?? [])
+        .flatMap((proposal) => proposal.suggestions ?? [])
+        .filter((suggestion) => suggestion.setupSeriesId === seriesId);
+    }
+  } catch {
+    if (review.selectedSeriesId === seriesId) {
+      review.seriesPendingSuggestions = [];
+      review.seriesPendingSuggestionsError = true;
+    }
+  } finally {
+    if (review.selectedSeriesId === seriesId) {
+      review.seriesPendingSuggestionsLoading = false;
+      if (state.screen === 'episodes') render();
+    }
+  }
+}
+
+function openSeriesDetails(seriesId) {
+  const review = state.episodeReview;
+  if (!review.series.some((series) => series.id === seriesId)) return;
+  review.selectedSeriesId = seriesId;
+  review.editingEpisodeId = null;
+  review.seriesEpisodes = [];
+  review.seriesEpisodesLoading = true;
+  review.seriesEpisodesError = false;
+  review.seriesPendingSuggestions = [];
+  review.seriesPendingSuggestionsLoading = true;
+  review.seriesPendingSuggestionsError = false;
+  review.seriesPendingEpisodeSelection = [];
+  review.seriesPendingEpisodeNumberDrafts = {};
+  review.seriesPendingEpisodeSaving = false;
+  render();
+  void loadSeriesEpisodes();
+  void loadSeriesPendingSuggestions();
+}
+
+function backToSeriesList() {
+  const review = state.episodeReview;
+  const seriesId = review.selectedSeriesId;
+  review.selectedSeriesId = null;
+  review.editingEpisodeId = null;
+  review.seriesEpisodes = [];
+  review.seriesEpisodesLoading = false;
+  review.seriesEpisodesError = false;
+  review.seriesPendingSuggestions = [];
+  review.seriesPendingSuggestionsLoading = false;
+  review.seriesPendingSuggestionsError = false;
+  review.seriesPendingEpisodeSelection = [];
+  review.seriesPendingEpisodeNumberDrafts = {};
+  review.seriesPendingEpisodeSaving = false;
+  render();
+  document.querySelector(`#episodesScreen [data-action="open-series-details"][data-series-id="${CSS.escape(seriesId ?? '')}"]`)
+    ?.focus({ preventScroll: true });
+}
+
+function focusSeriesSuggestionModal() {
+  document.querySelector('#episodesScreen .episode-series-suggestion-modal')?.focus({ preventScroll: true });
+}
+
+async function loadSeriesSuggestions() {
+  const review = state.episodeReview;
+  if (!review.selectedSeriesId || !review.seriesSuggestionModal.open) return;
+  review.seriesSuggestionModal.loading = true;
+  review.seriesSuggestionModal.error = false;
+  review.seriesSuggestionModal.candidates = [];
+  review.seriesSuggestionModal.selectedSuggestionIds = [];
+  render();
+  focusSeriesSuggestionModal();
+  try {
+    const result = await api.getEpisodeReview('SERIES');
+    const candidates = (result.seriesProposals ?? [])
+      .flatMap((proposal) => proposal.suggestions ?? [])
+      .filter((suggestion) => !suggestion.setupSeriesId && suggestion.classification !== 'NOT_EPISODE');
+    review.seriesSuggestionModal.candidates = [...new Map(candidates.map((suggestion) => [suggestion.id, suggestion])).values()];
+  } catch {
+    review.seriesSuggestionModal.error = true;
+  } finally {
+    review.seriesSuggestionModal.loading = false;
+    if (review.seriesSuggestionModal.open) {
+      render();
+      focusSeriesSuggestionModal();
+    }
+  }
+}
+
+function openSeriesSuggestionModal() {
+  const review = state.episodeReview;
+  if (!review.selectedSeriesId) return;
+  review.seriesSuggestionModal = {
+    open: true,
+    loading: true,
+    error: false,
+    saving: false,
+    candidates: [],
+    selectedSuggestionIds: [],
+  };
+  void loadSeriesSuggestions();
+}
+
+function closeSeriesSuggestionModal() {
+  const review = state.episodeReview;
+  if (!review.seriesSuggestionModal.open || review.seriesSuggestionModal.saving) return;
+  review.seriesSuggestionModal = {
+    open: false,
+    loading: false,
+    error: false,
+    saving: false,
+    candidates: [],
+    selectedSuggestionIds: [],
+  };
+  render();
+  document.querySelector('#episodesScreen [data-action="open-series-suggestions"]')?.focus({ preventScroll: true });
+}
+
+function updateSeriesSuggestionSelection(form) {
+  if (!form) return;
+  const selected = form.querySelectorAll('[data-series-suggestion-id]:checked').length;
+  const count = form.querySelector('[data-series-suggestion-count]');
+  const addButton = form.querySelector('[data-action="add-series-suggestions"]');
+  if (count) count.textContent = t('episodes.seriesSuggestionSelectedCount', { selected: formatNumber(selected) });
+  if (addButton) addButton.disabled = selected === 0 || state.episodeReview.seriesSuggestionModal.saving;
+}
+
+function updateSeriesPendingEpisodeSelection(form) {
+  if (!form) return;
+  const checkboxes = [...form.querySelectorAll('[data-series-pending-episode-suggestion-id]')];
+  for (const checkbox of checkboxes) {
+    const item = checkbox.closest('[data-series-pending-suggestion-id]');
+    const numberInput = item?.querySelector('[data-series-pending-episode-number]');
+    const episodeNumber = Number(numberInput?.value ?? checkbox.dataset.episodeNumber);
+    const episodeNumberReady = Number.isSafeInteger(episodeNumber) && episodeNumber > 0;
+    const ready = checkbox.dataset.readyWithoutEpisodeNumber === 'true' && episodeNumberReady;
+    checkbox.dataset.episodeNumber = episodeNumberReady ? String(episodeNumber) : '';
+    checkbox.disabled = !ready || state.episodeReview.seriesPendingEpisodeSaving;
+    if (numberInput) {
+      state.episodeReview.seriesPendingEpisodeNumberDrafts[checkbox.dataset.seriesPendingEpisodeSuggestionId] = numberInput.value;
+    }
+    if (!ready && checkbox.checked) checkbox.checked = false;
+    const label = item?.querySelector('[data-series-pending-episode-label]');
+    if (label) {
+      label.textContent = [
+        checkbox.dataset.seasonNumber
+          ? t('episodes.seasonLabel', { season: formatNumber(Number(checkbox.dataset.seasonNumber)) })
+          : '',
+        episodeNumberReady
+          ? t('episodes.episodeLabel', { episode: formatNumber(episodeNumber) })
+          : t('analytics.unavailable'),
+      ].filter(Boolean).join(' · ');
+    }
+    const needsReview = item?.querySelector('.episode-series-pending-needs-review');
+    if (needsReview) needsReview.hidden = ready;
+  }
+  const selectedInputs = [...form.querySelectorAll('[data-series-pending-episode-suggestion-id]:checked')];
+  state.episodeReview.seriesPendingEpisodeSelection = selectedInputs
+    .map((input) => input.dataset.seriesPendingEpisodeSuggestionId);
+  const count = form.querySelector('[data-series-pending-episode-count]');
+  const addButton = form.querySelector('[data-action="add-series-pending-episodes"]');
+  if (count) {
+    count.textContent = t('episodes.seriesPendingSelectionCount', {
+      count: formatNumber(selectedInputs.length),
+    });
+  }
+  if (addButton) {
+    addButton.disabled = selectedInputs.length === 0
+      || state.episodeReview.seriesPendingEpisodeSaving;
+  }
+}
+
+async function addSelectedSeriesPendingEpisodes(event) {
+  event.preventDefault();
+  const review = state.episodeReview;
+  const selected = [...event.target.querySelectorAll('[data-series-pending-episode-suggestion-id]:checked')];
+  const seriesId = review.selectedSeriesId;
+  if (!seriesId || !selected.length) return;
+
+  const approvalGroups = new Map();
+  for (const input of selected) {
+    const seasonNumber = input.dataset.seasonNumber === '' ? null : Number(input.dataset.seasonNumber);
+    const episodeNumber = Number(input.dataset.episodeNumber);
+    if (!Number.isSafeInteger(episodeNumber) || episodeNumber < 1) return;
+    const key = JSON.stringify([seasonNumber, episodeNumber]);
+    const group = approvalGroups.get(key) ?? {
+      seasonNumber,
+      episodeNumber,
+      suggestionIds: [],
+    };
+    group.suggestionIds.push(input.dataset.seriesPendingEpisodeSuggestionId);
+    approvalGroups.set(key, group);
+  }
+
+  review.seriesPendingEpisodeSelection = selected.map((input) => input.dataset.seriesPendingEpisodeSuggestionId);
+  review.seriesPendingEpisodeSaving = true;
+  render();
+  let added = 0;
+  let failed = 0;
+  for (const group of approvalGroups.values()) {
+    try {
+      await api.approveEpisodeSuggestionGroup({
+        suggestionIds: group.suggestionIds,
+        seriesId,
+        seasonNumber: group.seasonNumber,
+        episodeNumber: group.episodeNumber,
+      });
+      added += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+
+  review.seriesPendingEpisodeSaving = false;
+  review.seriesPendingEpisodeSelection = [];
+  review.seriesPendingEpisodeNumberDrafts = {};
+  showToast(failed
+    ? t('episodes.seriesEpisodesPartial', {
+      added: formatNumber(added),
+      failed: formatNumber(failed),
+    })
+    : t('episodes.seriesEpisodesAdded', { count: formatNumber(added) }), {
+    error: added === 0,
+  });
+  await loadEpisodeReview({ showLoading: false });
+  await Promise.all([loadSeriesEpisodes(), loadSeriesPendingSuggestions()]);
+}
+
+async function addSelectedSeriesSuggestions(event) {
+  event.preventDefault();
+  const review = state.episodeReview;
+  const form = event.target;
+  const suggestionIds = [...form.querySelectorAll('[data-series-suggestion-id]:checked')]
+    .map((input) => input.dataset.seriesSuggestionId);
+  if (!suggestionIds.length || !review.selectedSeriesId) return;
+  review.seriesSuggestionModal.selectedSuggestionIds = suggestionIds;
+  review.seriesSuggestionModal.saving = true;
+  render();
+  try {
+    await api.confirmEpisodeSetupSeries({ suggestionIds, seriesId: review.selectedSeriesId });
+    review.seriesSuggestionModal = {
+      open: false,
+      loading: false,
+      error: false,
+      saving: false,
+      candidates: [],
+      selectedSuggestionIds: [],
+    };
+    showToast(t('episodes.actionSaved'));
+    await loadEpisodeReview({ showLoading: false });
+    await Promise.all([loadSeriesEpisodes(), loadSeriesPendingSuggestions()]);
+  } catch {
+    review.seriesSuggestionModal.saving = false;
+    showToast(t('episodes.actionFailed'), { error: true });
+    render();
   }
 }
 
@@ -867,7 +1269,7 @@ async function decideEpisodeGroup(button) {
 
 async function confirmEpisodeSeriesProposal(event) {
   event.preventDefault();
-  const form = event.currentTarget;
+  const form = event.target;
   const values = new FormData(form);
   const suggestionIds = [...form.querySelectorAll('[data-review-publication]:checked')]
     .map((input) => input.dataset.reviewPublication);
@@ -891,7 +1293,7 @@ async function confirmEpisodeSeriesProposal(event) {
 
 async function confirmEpisodeSeasonProposal(event) {
   event.preventDefault();
-  const form = event.currentTarget;
+  const form = event.target;
   const values = new FormData(form);
   const suggestionIds = [...form.querySelectorAll('[data-review-publication]:checked')]
     .map((input) => input.dataset.reviewPublication);
@@ -922,7 +1324,7 @@ async function saveEpisodeSetupDecision(action) {
 
 async function approveEpisodeGroup(event) {
   event.preventDefault();
-  const form = event.currentTarget;
+  const form = event.target;
   const values = new FormData(form);
   const suggestionIds = [...form.querySelectorAll('[data-review-publication]:checked')]
     .map((input) => input.dataset.reviewPublication);
@@ -945,10 +1347,9 @@ async function approveEpisodeGroup(event) {
           aliases: String(values.get('seriesAliases') ?? '').split(',').map((alias) => alias.trim()).filter(Boolean),
           seasonMode,
         },
-      }),
+    }),
     seasonNumber: seasonMode === 'SEASONAL' && seasonNumberValue !== '' ? Number(seasonNumberValue) : null,
     episodeNumber: Number(episodeNumberValue),
-    episodeCode: String(values.get('episodeCode') ?? '').trim(),
   };
   state.episodeReview.saving = true;
   render();
@@ -965,7 +1366,7 @@ async function approveEpisodeGroup(event) {
 }
 
 function emptyManualEpisodeDraft() {
-  return { seriesId: '', seasonNumber: '', episodeNumber: '', episodeCode: '', selectedPublications: {} };
+  return { seriesId: '', seasonNumber: '', episodeNumber: '', selectedPublications: {} };
 }
 
 function captureManualEpisodeDraft() {
@@ -976,7 +1377,6 @@ function captureManualEpisodeDraft() {
   draft.seriesId = String(values.get('seriesId') ?? '');
   draft.seasonNumber = String(values.get('seasonNumber') ?? '');
   draft.episodeNumber = String(values.get('episodeNumber') ?? '');
-  draft.episodeCode = String(values.get('episodeCode') ?? '');
 }
 
 function openManualEpisodeForm() {
@@ -1006,7 +1406,13 @@ async function createManualSeries(event) {
   state.episodeReview.saving = true;
   render();
   try {
-    await api.createAnalyticsSeries(input);
+    const createdSeries = await api.createAnalyticsSeries(input);
+    if (createdSeries?.id) {
+      state.episodeReview.series = [
+        ...state.episodeReview.series.filter((series) => series.id !== createdSeries.id),
+        createdSeries,
+      ];
+    }
     state.episodeReview.manualSeriesOpen = false;
     showToast(t('episodes.actionSaved'));
     await loadEpisodeReview({ showLoading: false });
@@ -1095,6 +1501,88 @@ function removeManualPublication(platform) {
   )?.focus({ preventScroll: true });
 }
 
+async function updateSeriesEpisode(event) {
+  event.preventDefault();
+  const review = state.episodeReview;
+  const form = event.target;
+  const episodeId = form.dataset.episodeId;
+  const seriesId = review.selectedSeriesId;
+  const selectedSeries = review.series.find((series) => series.id === seriesId);
+  if (!episodeId || !seriesId || !selectedSeries) {
+    showToast(t('episodes.actionFailed'), { error: true });
+    return;
+  }
+  const data = new FormData(form);
+  const episodeNumber = Number(data.get('episodeNumber'));
+  const seasonField = data.get('seasonNumber');
+  const seasonNumber = selectedSeries.seasonMode === 'SEASONAL'
+    ? Number(seasonField)
+    : null;
+  const episodeCode = String(data.get('episodeCode') ?? '').trim();
+  const costAmount = String(data.get('productionCostAmount') ?? '').trim();
+  const timeSeconds = String(data.get('productionTimeSeconds') ?? '').trim();
+  if (!Number.isSafeInteger(episodeNumber) || episodeNumber < 1
+    || (selectedSeries.seasonMode === 'SEASONAL' && (!Number.isSafeInteger(seasonNumber) || seasonNumber < 1))) {
+    showToast(t('episodes.actionFailed'), { error: true });
+    return;
+  }
+  review.saving = true;
+  render();
+  try {
+    await api.updateAnalyticsEpisode(episodeId, {
+      seriesId,
+      seasonNumber,
+      episodeNumber,
+      ...(episodeCode ? { episodeCode } : {}),
+      productionCost: costAmount === '' ? null : { amount: costAmount, currency: 'BRL' },
+      productionTimeSeconds: timeSeconds === '' ? null : Number(timeSeconds),
+    });
+    showToast(t('episodes.actionSaved'));
+    review.editingEpisodeId = null;
+    await loadSeriesEpisodes();
+  } catch (error) {
+    showToast(apiErrorMessage(error?.code ?? ''), { error: true });
+  } finally {
+    review.saving = false;
+    render();
+  }
+}
+
+async function moveEpisodePublicationLink(form) {
+  const review = state.episodeReview;
+  const { episodeId, accountId, publicationId } = form.dataset;
+  const selectedSeries = review.series.find((series) => series.id === review.selectedSeriesId);
+  if (!episodeId || !accountId || !publicationId || !selectedSeries) {
+    showToast(t('episodes.actionFailed'), { error: true });
+    return;
+  }
+  const data = new FormData(form);
+  const episodeNumber = Number(data.get('episodeNumber'));
+  const seasonNumber = selectedSeries.seasonMode === 'SEASONAL' ? Number(data.get('seasonNumber')) : null;
+  if (!Number.isSafeInteger(episodeNumber) || episodeNumber < 1
+    || (selectedSeries.seasonMode === 'SEASONAL' && (!Number.isSafeInteger(seasonNumber) || seasonNumber < 1))) {
+    showToast(t('episodes.actionFailed'), { error: true });
+    return;
+  }
+  review.saving = true;
+  render();
+  try {
+    await api.updateEpisodePublicationLink(episodeId, {
+      socialAccountId: accountId,
+      externalPublicationId: publicationId,
+      moveTo: { seasonNumber, episodeNumber },
+    });
+    showToast(t('episodes.actionSaved'));
+    review.editingLink = null;
+    await loadSeriesEpisodes();
+  } catch (error) {
+    showToast(apiErrorMessage(error?.code ?? ''), { error: true });
+  } finally {
+    review.saving = false;
+    render();
+  }
+}
+
 async function createManualEpisode(event) {
   event.preventDefault();
   const review = state.episodeReview;
@@ -1118,7 +1606,6 @@ async function createManualEpisode(event) {
         ? Number(draft.seasonNumber)
         : null,
       episodeNumber: Number(draft.episodeNumber),
-      episodeCode: String(draft.episodeCode ?? '').trim(),
       productionCost: null,
       productionTimeSeconds: null,
       publicationSelections,
@@ -1148,6 +1635,30 @@ function trapManualPickerFocus(event) {
   const first = focusable[0];
   const last = focusable.at(-1);
   if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function trapSeriesSuggestionModalFocus(event) {
+  const dialog = document.querySelector('#episodesScreen .episode-series-suggestion-modal');
+  if (!dialog) return;
+  const focusable = [...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.hidden && element.offsetParent !== null);
+  if (!focusable.length) {
+    event.preventDefault();
+    dialog.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (document.activeElement === dialog) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && document.activeElement === first) {
     event.preventDefault();
     last.focus();
   } else if (!event.shiftKey && document.activeElement === last) {
@@ -1263,7 +1774,10 @@ async function setScreen(screen) {
   state.screen = screen;
   window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${screen}`);
   render();
-  if (screen === 'dashboard') return;
+  if (screen === 'dashboard') {
+    if (!state.analytics.report && !state.analytics.loading) await loadAnalyticsDashboard();
+    return;
+  }
   if (screen === 'episodes') {
     await loadEpisodeReview({ autoSync: true });
     return;
@@ -2082,6 +2596,7 @@ async function generateBulkReplies() {
       toneProfile: bulk.toneProfile,
       toneProfileForComment: (comment) => findBulkRow(bulk, comment.externalCommentId)?.toneProfile ?? bulk.toneProfile,
       languageForComment: (comment) => findBulkRow(bulk, comment.externalCommentId)?.language ?? state.language,
+      eventsForComment: (comment) => state.workflows.get(commentKey(bulk.accountId, comment.externalCommentId)),
       onProgress: (update) => {
         const current = findBulkRow(bulk, update.commentId);
         if (!current) return;
@@ -2099,7 +2614,7 @@ async function generateBulkReplies() {
           total: update.total,
           commentName: current.comment.authorDisplayName || current.comment.externalCommentId,
         };
-        render();
+        scheduleBulkProgressRender(update.commentId);
       },
     });
 
@@ -2270,14 +2785,10 @@ async function approveBulkReplies(commentIds) {
       rows: bulk.rows,
       commentIds,
       onProgress: ({ phase, row }) => {
-        if (phase === 'saving') {
-          render();
-          return;
-        }
         const key = commentKey(bulk.accountId, row.comment.externalCommentId);
         state.workflows.set(key, row.events ?? []);
         if (row.approved) bulk.selectedIds.delete(row.comment.externalCommentId);
-        render();
+        scheduleBulkProgressRender(row.comment.externalCommentId);
       },
     });
   } catch (error) {
@@ -2319,7 +2830,7 @@ async function sendAllApprovedBulkReplies() {
           total,
           commentName: row.comment.authorDisplayName || row.comment.externalCommentId,
         };
-        render();
+        scheduleBulkProgressRender(row.comment.externalCommentId);
       },
     });
   } catch (error) {
@@ -2728,6 +3239,17 @@ function attachEvents() {
     void applySentRepliesReportFilters(event.currentTarget);
   });
   $('#repliesReportCsv').addEventListener('click', () => { void exportSentRepliesReportCsv(); });
+  $('#dashboardScreen').addEventListener('click', (event) => {
+    if (event.target.closest?.('[data-action="retry-analytics-dashboard"]')) {
+      void loadAnalyticsDashboard();
+    }
+  });
+  $('#dashboardScreen').addEventListener('change', (event) => {
+    const select = event.target.closest?.('[data-analytics-ranking-window]');
+    if (!select) return;
+    state.analytics.rankingWindow = Number(select.value) || 30;
+    render();
+  });
   $('#repliesReportResults').addEventListener('click', (event) => {
     const action = event.target.closest?.('[data-action]')?.dataset.action;
     if (action === 'report-more' && state.sentRepliesReport.nextCursor) {
@@ -2738,6 +3260,10 @@ function attachEvents() {
     }
   });
   $('#episodesScreen').addEventListener('click', (event) => {
+    if (event.target.matches?.('[data-series-suggestions-backdrop]')) {
+      closeSeriesSuggestionModal();
+      return;
+    }
     if (event.target.matches?.('[data-manual-picker-backdrop]')) {
       closeManualPublicationPicker();
       return;
@@ -2746,7 +3272,22 @@ function attachEvents() {
     if (!button) return;
     if (button.dataset.action === 'refresh-episode-suggestions') void refreshEpisodeSuggestions();
     else if (button.dataset.action === 'retry-episode-review') void loadEpisodeReview();
+    else if (button.dataset.action === 'series-list-page') {
+      state.episodeReview.seriesPage = Number(button.dataset.page) || 0;
+      render();
+    }
+    else if (button.dataset.action === 'open-series-details') openSeriesDetails(button.dataset.seriesId);
+    else if (button.dataset.action === 'back-to-series-list') backToSeriesList();
+    else if (button.dataset.action === 'retry-series-episodes') void loadSeriesEpisodes();
+    else if (button.dataset.action === 'retry-series-pending-suggestions') void loadSeriesPendingSuggestions();
+    else if (button.dataset.action === 'open-series-suggestions') openSeriesSuggestionModal();
+    else if (button.dataset.action === 'retry-series-suggestions') void loadSeriesSuggestions();
+    else if (button.dataset.action === 'close-series-suggestions') closeSeriesSuggestionModal();
     else if (button.dataset.action === 'episode-review-stage') void loadEpisodeReview({ stage: button.dataset.stage });
+    else if (button.dataset.action === 'toggle-episode-recommendations') {
+      state.episodeReview.recommendationsOpen = !state.episodeReview.recommendationsOpen;
+      render();
+    }
     else if (button.dataset.action === 'toggle-unidentified-series') {
       state.episodeReview.showUnidentifiedSeries = !state.episodeReview.showUnidentifiedSeries;
       render();
@@ -2782,15 +3323,79 @@ function attachEvents() {
     else if (button.dataset.action === 'close-manual-publication-picker') closeManualPublicationPicker();
     else if (button.dataset.action === 'select-manual-publication') selectManualPublication(button);
     else if (button.dataset.action === 'remove-manual-publication') removeManualPublication(button.dataset.platform);
+    else if (button.dataset.action === 'edit-series-episode') {
+      state.episodeReview.editingEpisodeId = state.episodeReview.editingEpisodeId === button.dataset.episodeId
+        ? null
+        : button.dataset.episodeId;
+      render();
+    }
+    else if (button.dataset.action === 'cancel-series-episode-edit') {
+      state.episodeReview.editingEpisodeId = null;
+      render();
+    }
+    else if (button.dataset.action === 'edit-episode-publication') {
+      const { episodeId, accountId, publicationId } = button.dataset;
+      const key = `${episodeId}\u0000${accountId}\u0000${publicationId}`;
+      state.episodeReview.editingLink = state.episodeReview.editingLink?.key === key
+        ? null
+        : { key, episodeId, socialAccountId: accountId, externalPublicationId: publicationId };
+      render();
+    }
+    else if (button.dataset.action === 'cancel-episode-publication-edit') {
+      state.episodeReview.editingLink = null;
+      render();
+    }
+  });
+  $('#episodesScreen').addEventListener('error', (event) => {
+    const image = event.target;
+    if (image?.dataset?.thumbFallbacks !== undefined) {
+      try {
+        const fallbacks = JSON.parse(image.dataset.thumbFallbacks);
+        const nextSrc = Array.isArray(fallbacks) ? fallbacks.shift() : null;
+        if (nextSrc) {
+          image.dataset.thumbFallbacks = JSON.stringify(fallbacks);
+          image.src = nextSrc;
+          return;
+        }
+      } catch { /* fall through to hide */ }
+      image.hidden = true;
+      return;
+    }
+    const pendingImage = event.target.closest?.('[data-series-pending-thumbnail]');
+    if (!pendingImage) return;
+    pendingImage.hidden = true;
+    const fallback = pendingImage.nextElementSibling;
+    if (fallback) fallback.hidden = false;
+  }, true);
+  $('#episodesScreen').addEventListener('input', (event) => {
+    if (event.target.matches?.('[data-series-pending-episode-number]')) {
+      updateSeriesPendingEpisodeSelection(event.target.closest('form[data-series-pending-episode-form]'));
+    }
   });
   $('#episodesScreen').addEventListener('submit', (event) => {
-    if (event.target.matches('form[data-series-proposal]')) void confirmEpisodeSeriesProposal(event);
+    if (event.target.matches('form[data-series-pending-episode-form]')) void addSelectedSeriesPendingEpisodes(event);
+    else if (event.target.matches('form[data-series-suggestion-form]')) void addSelectedSeriesSuggestions(event);
+    else if (event.target.matches('form[data-series-proposal]')) void confirmEpisodeSeriesProposal(event);
     else if (event.target.matches('form[data-season-proposal]')) void confirmEpisodeSeasonProposal(event);
     else if (event.target.matches('form[data-episode-group]')) void approveEpisodeGroup(event);
     else if (event.target.matches('form[data-manual-series-form]')) void createManualSeries(event);
     else if (event.target.matches('form[data-manual-episode-form]')) void createManualEpisode(event);
+    else if (event.target.matches('form[data-series-episode-edit-form]')) void updateSeriesEpisode(event);
+    else if (event.target.matches('form[data-episode-link-edit-form]')) {
+      event.preventDefault();
+      void moveEpisodePublicationLink(event.target);
+    }
   });
   $('#episodesScreen').addEventListener('keydown', (event) => {
+    if (state.episodeReview.seriesSuggestionModal?.open) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeSeriesSuggestionModal();
+      } else if (event.key === 'Tab') {
+        trapSeriesSuggestionModalFocus(event);
+      }
+      return;
+    }
     if (!state.episodeReview.manualPicker?.open) return;
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -2800,6 +3405,14 @@ function attachEvents() {
     }
   });
   $('#episodesScreen').addEventListener('change', (event) => {
+    if (event.target.matches?.('[data-series-pending-episode-suggestion-id]')) {
+      updateSeriesPendingEpisodeSelection(event.target.closest('form[data-series-pending-episode-form]'));
+      return;
+    }
+    if (event.target.matches?.('[data-series-suggestion-id]')) {
+      updateSeriesSuggestionSelection(event.target.closest('form[data-series-suggestion-form]'));
+      return;
+    }
     const control = event.target.closest?.('[data-review-publication], [data-role="setup-series"], [data-role="episode-series"], [data-role="episode-season-mode"], [data-role="manual-episode-series"]');
     if (!control) return;
     if (control.matches('[data-review-publication]')) {
@@ -3015,6 +3628,7 @@ async function start() {
   render();
   if (state.screen === 'dashboard') {
     state.loadingPublications = false;
+    await loadAnalyticsDashboard();
     return;
   }
   if (state.screen === 'episodes') {

@@ -89,8 +89,11 @@ The monthly milestones are 1M, 3M, 5M, and 10M views; revenue milestones are BRL
 
 ### Manual-entry presentation contract
 
+- `GET /analytics/dashboard` returns one tenant-scoped reporting snapshot, with `generatedAt`, the effective reporting timezone, headline view totals for 7/30/90 days, month-over-month comparison, follower totals/deltas, platform breakdown, rankings, episode/series trends, monthly revenue/cost, and view/revenue milestone progress.
 - `POST /analytics/series` creates a tenant-scoped series from `{ name, aliases, seasonMode }`.
 - `POST /analytics/episodes` creates a tenant-scoped episode from `{ seriesId, seasonNumber, episodeNumber, episodeCode, productionCost, productionTimeSeconds }`.
+- `PUT /analytics/episodes/{episodeId}` corrects a registered episode's `{ seasonNumber, episodeNumber, episodeCode, productionCost, productionTimeSeconds }`. The episode keeps its series; the same season-mode and tenant-unique identity/code validations apply, excluding the episode's own record. Publication links and observations follow the episode and are preserved.
+- `PUT /analytics/episodes/{episodeId}/publications` corrects one publication link inside an episode from `{ socialAccountId, externalPublicationId }` plus exactly one action: `next` (`{ socialAccountId, externalPublicationId }` of an imported, currently unlinked publication on the same platform, or `null` to unlink) or `moveTo` (`{ seasonNumber, episodeNumber }` of an existing episode in the same series). Replacement is atomic, keeps the episode association, and preserves the source's recorded observations under the corrected identity. Moving reassigns the link and its observations to the target episode. Unlinking removes the link; observations recorded for that source are removed with it.
 - `PUT /analytics/episodes/{episodeId}/economics` updates `{ productionCost, productionTimeSeconds }`; `null` means unavailable.
 - `PUT /analytics/observations/performance` upserts one observation for an approved episode publication link from `{ episodeId, socialAccountId, externalPublicationId, observedAt, publishedAt, durationSeconds, metrics, metricDefinitions }`.
 - `PUT /analytics/audience/snapshots` upserts one account total-follower snapshot from `{ socialAccountId, observedAt, totalFollowers }`.
@@ -115,6 +118,8 @@ The monthly milestones are 1M, 3M, 5M, and 10M views; revenue milestones are BRL
 ## 6. Dashboard Presentation Contract
 
 The primary dashboard must prioritize the six questions over detailed tables, and the six answers plus headline metrics and goal progress must be visible in its first view without requiring navigation. In a task-based usability check, at least 4 of 5 representative creators must answer all six questions within 10 seconds each, without assistance. Rankings and trend views support a selectable reporting window; default ranking window is an open product decision. Every aggregate indicates its window and platform scope. Distinguish zero, unavailable, incomplete history, and not-yet-monetized. Label follower totals as the sum of platform account figures, not unique people. Surface the next and achieved monthly goal milestones.
+
+Dashboard queries use UTC until a tenant reporting timezone is available. The first ranking window is 30 days; the response also includes rankings for 7 and 90 days so the interface can offer those choices without another query. A metric is unavailable when no source data exists, and incomplete when at least one contributing linked publication/account lacks the observations needed to calculate it. Do not present partial aggregates as complete totals. The response preserves that status alongside nullable values; zero remains a valid measured value.
 
 ## 7. Security and Observability
 

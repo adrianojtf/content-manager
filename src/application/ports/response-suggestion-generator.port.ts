@@ -9,6 +9,7 @@ export interface GeneratedResponseSuggestion {
   readonly intendedTone: string;
   readonly provider: string;
   readonly model: string;
+  readonly promptVersion?: string;
   readonly confidence: number;
   readonly rationale: string | null;
 }

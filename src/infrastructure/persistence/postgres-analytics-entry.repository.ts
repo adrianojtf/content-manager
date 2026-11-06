@@ -3,6 +3,8 @@ import type {
   AnalyticsEntryRepository,
   AnalyticsEpisodeRecord,
   AnalyticsMoneyAmount,
+  AnalyticsSeriesEpisodeDetails,
+  AnalyticsSeriesEpisodePublication,
   AccountFollowerSnapshotRecord,
   MonthlyPlatformRevenueRecord,
   PerformanceMetricValues,
@@ -11,6 +13,7 @@ import type {
   CreateEpisodeWithPublicationsInput,
   ManualEpisodeCreationResult,
 } from '../../application/ports/analytics-entry.repository.port';
+import type { AnalyticsDashboardSourceData, DashboardEpisodeSource } from '../../domain/analytics/dashboard-report';
 import type {
   EpisodeReviewSeasonMode,
   EpisodeReviewSeries,
@@ -36,6 +39,18 @@ interface EpisodeRow extends Record<string, unknown> {
   episode_code: string;
   production_cost_amount: string | number | null;
   production_time_seconds: number | null;
+}
+
+interface SeriesEpisodeRow extends EpisodeRow {
+  publication_platform: string | null;
+  publication_account_id: string | null;
+  social_account_name: string | null;
+  external_publication_id: string | null;
+  title: string | null;
+  description: string | null;
+  permalink: string | null;
+  thumbnail_url: string | null;
+  published_at: Date | string | null;
 }
 
 interface ObservationRow extends Record<string, unknown> {
@@ -96,6 +111,174 @@ const monthDatePattern = /^\d{4}-\d{2}-\d{2}$/;
 
 export class PostgresAnalyticsEntryRepository implements AnalyticsEntryRepository {
   constructor(private readonly database: RelationalDatabase) {}
+
+  async getDashboardData(tenantId: string): Promise<AnalyticsDashboardSourceData> {
+    const [seriesResult, episodeResult, observationResult, accountResult, snapshotResult, revenueResult] = await Promise.all([
+      this.database.query<SeriesRow>(
+        'SELECT id, name, aliases_json, season_mode FROM analytics_series WHERE tenant_id = $1 ORDER BY name, id',
+        [tenantId],
+      ),
+      this.database.query<SeriesEpisodeRow & { publication_account_id: string | null }>(
+        `SELECT episode.id, episode.series_id, episode.season_number, episode.episode_number, episode.episode_code,
+                episode.production_cost_amount, episode.production_time_seconds,
+                link.platform AS publication_platform, link.social_account_id AS publication_account_id,
+                link.external_publication_id, publication.published_at
+         FROM analytics_episodes AS episode
+         LEFT JOIN analytics_episode_publication_links AS link
+           ON link.tenant_id = episode.tenant_id AND link.episode_id = episode.id
+         LEFT JOIN social_publications AS publication
+           ON publication.tenant_id = link.tenant_id
+          AND publication.social_account_id = link.social_account_id
+          AND publication.external_publication_id = link.external_publication_id
+         WHERE episode.tenant_id = $1
+         ORDER BY episode.series_id, episode.season_number NULLS FIRST, episode.episode_number, episode.id`,
+        [tenantId],
+      ),
+      this.database.query<ObservationRow>(
+        `SELECT id, episode_id, social_account_id, external_publication_id, platform,
+                observed_at, published_at, duration_seconds,
+                views, likes, comments, shares, saves, reach, followers_gained, profile_visits,
+                average_watch_time_seconds, retention_percent, metric_definitions_json,
+                created_at, updated_at
+         FROM analytics_performance_observations
+         WHERE tenant_id = $1
+         ORDER BY observed_at, id`,
+        [tenantId],
+      ),
+      this.database.query<{ id: string }>(
+        'SELECT id FROM social_accounts WHERE tenant_id = $1 ORDER BY id',
+        [tenantId],
+      ),
+      this.database.query<SnapshotRow>(
+        `SELECT social_account_id, observed_at, total_followers, created_at, updated_at
+         FROM analytics_account_follower_snapshots
+         WHERE tenant_id = $1
+         ORDER BY social_account_id, observed_at`,
+        [tenantId],
+      ),
+      this.database.query<RevenueRow>(
+        `SELECT platform, month, amount, currency, created_at, updated_at
+         FROM analytics_platform_monthly_revenue
+         WHERE tenant_id = $1
+         ORDER BY month, platform`,
+        [tenantId],
+      ),
+    ]);
+
+    const episodes = new Map<string, DashboardEpisodeSource>();
+    for (const row of episodeResult.rows) {
+      const episode = episodes.get(row.id) ?? {
+        id: row.id,
+        seriesId: row.series_id,
+        seasonNumber: row.season_number,
+        episodeNumber: row.episode_number,
+        episodeCode: row.episode_code,
+        productionCostAmount: row.production_cost_amount === null ? null : this.formatAmount(row.production_cost_amount),
+        productionTimeSeconds: row.production_time_seconds,
+        publications: [],
+      };
+      const accountId = row.publication_account_id;
+      const externalPublicationId = row.external_publication_id;
+      const publicationPlatform = row.publication_platform;
+      if (accountId && externalPublicationId && publicationPlatform) {
+        episodes.set(row.id, {
+          ...episode,
+          publications: [...episode.publications, {
+            socialAccountId: accountId,
+            externalPublicationId,
+            platform: publicationPlatform as DashboardEpisodeSource['publications'][number]['platform'],
+            publishedAt: this.toIsoString(row.published_at),
+          }],
+        });
+      } else {
+        episodes.set(row.id, episode);
+      }
+    }
+
+    return {
+      series: seriesResult.rows.map((row) => ({ id: row.id, name: row.name })),
+      episodes: [...episodes.values()],
+      observations: observationResult.rows.map((row) => {
+        const observation = this.restoreObservation(row);
+        return {
+          episodeId: observation.episodeId,
+          socialAccountId: observation.socialAccountId,
+          externalPublicationId: observation.externalPublicationId,
+          platform: observation.platform,
+          observedAt: observation.observedAt,
+          metrics: {
+            views: observation.metrics.views,
+            likes: observation.metrics.likes,
+            comments: observation.metrics.comments,
+            shares: observation.metrics.shares,
+            saves: observation.metrics.saves,
+            followersGained: observation.metrics.followersGained,
+          },
+        };
+      }),
+      socialAccountIds: accountResult.rows.map((row) => row.id),
+      followerSnapshots: snapshotResult.rows.map((row) => ({
+        socialAccountId: row.social_account_id,
+        observedAt: this.toIsoString(row.observed_at) as string,
+        totalFollowers: Number(row.total_followers),
+      })),
+      revenue: revenueResult.rows.map((row) => ({
+        platform: row.platform as 'instagram' | 'facebook' | 'tiktok',
+        month: this.toDateString(row.month),
+        amount: { amount: this.formatAmount(row.amount), currency: 'BRL' as const },
+      })),
+    };
+  }
+
+  async listEpisodesBySeries(
+    tenantId: string,
+    seriesId: string,
+  ): Promise<readonly AnalyticsSeriesEpisodeDetails[]> {
+    const { rows } = await this.database.query<SeriesEpisodeRow>(
+      `SELECT episode.id, episode.series_id, episode.season_number, episode.episode_number, episode.episode_code,
+              episode.production_cost_amount, episode.production_time_seconds,
+              publication.platform AS publication_platform, link.social_account_id AS publication_account_id,
+              account.display_name AS social_account_name,
+              publication.external_publication_id, publication.title, publication.description,
+              publication.permalink, publication.thumbnail_url, publication.published_at
+       FROM analytics_episodes AS episode
+       LEFT JOIN analytics_episode_publication_links AS link
+         ON link.tenant_id = episode.tenant_id AND link.episode_id = episode.id
+       LEFT JOIN social_publications AS publication
+         ON publication.tenant_id = link.tenant_id
+        AND publication.social_account_id = link.social_account_id
+        AND publication.external_publication_id = link.external_publication_id
+       LEFT JOIN social_accounts AS account
+         ON account.tenant_id = publication.tenant_id AND account.id = publication.social_account_id
+       WHERE episode.tenant_id = $1 AND episode.series_id = $2
+       ORDER BY episode.season_number NULLS FIRST, episode.episode_number, episode.episode_code,
+                publication.published_at DESC NULLS LAST, publication.external_publication_id`,
+      [tenantId, seriesId],
+    );
+    const grouped = new Map<string, {
+      episode: AnalyticsEpisodeRecord;
+      publications: AnalyticsSeriesEpisodePublication[];
+    }>();
+    for (const row of rows) {
+      const group = grouped.get(row.id) ?? { episode: this.restoreEpisode(row), publications: [] };
+      if (row.external_publication_id !== null && row.publication_platform !== null
+        && row.publication_account_id !== null) {
+        group.publications.push({
+          platform: row.publication_platform as SocialPlatform,
+          socialAccountId: parseSocialAccountId(row.publication_account_id),
+          socialAccountName: row.social_account_name,
+          externalPublicationId: row.external_publication_id,
+          title: row.title,
+          description: row.description,
+          permalink: row.permalink,
+          thumbnailUrl: row.thumbnail_url,
+          publishedAt: this.toIsoString(row.published_at),
+        });
+      }
+      grouped.set(row.id, group);
+    }
+    return [...grouped.values()].map(({ episode, publications }) => ({ ...episode, publications }));
+  }
 
   async listUnlinkedPublications(
     tenantId: string,
@@ -391,6 +574,189 @@ export class PostgresAnalyticsEntryRepository implements AnalyticsEntryRepositor
       [tenantId, episodeId],
     );
     return rows[0] ? this.restoreEpisode(rows[0]) : null;
+  }
+
+  async updateEpisode(
+    tenantId: string,
+    input: Parameters<AnalyticsEntryRepository['updateEpisode']>[1],
+  ): Promise<AnalyticsEpisodeRecord> {
+    const episodeCode = typeof input.episodeCode === 'string' ? input.episodeCode.trim() : '';
+    if (!input.episodeId || !episodeCode || episodeCode.length > 100
+      || !Number.isSafeInteger(input.episodeNumber) || input.episodeNumber < 1
+      || (input.seasonNumber !== null && (!Number.isSafeInteger(input.seasonNumber) || input.seasonNumber < 1))
+      || !this.validMoney(input.productionCost)
+      || (input.productionTimeSeconds !== null
+        && (!Number.isSafeInteger(input.productionTimeSeconds) || input.productionTimeSeconds < 0))
+      || !Number.isFinite(Date.parse(input.at))) {
+      throw new AnalyticsEntryError('ANALYTICS_ENTRY_INPUT_INVALID');
+    }
+    const existing = await this.findEpisodeById(tenantId, input.episodeId);
+    if (!existing || existing.seriesId !== input.seriesId) {
+      throw new AnalyticsEntryError('ANALYTICS_ENTRY_EPISODE_NOT_FOUND');
+    }
+    const series = await this.findSeries(tenantId, input.seriesId);
+    if (!series) throw new AnalyticsEntryError('ANALYTICS_ENTRY_SERIES_NOT_FOUND');
+    if ((series.seasonMode === 'SEASONAL' && (input.seasonNumber === null || input.seasonNumber < 1))
+      || (series.seasonMode === 'NON_SEASONAL' && input.seasonNumber !== null)) {
+      throw new AnalyticsEntryError('ANALYTICS_ENTRY_INPUT_INVALID');
+    }
+    const { rows: codeRows } = await this.database.query<{ id: string }>(
+      'SELECT id FROM analytics_episodes WHERE tenant_id = $1 AND episode_code = $2 AND id <> $3',
+      [tenantId, episodeCode, input.episodeId],
+    );
+    if (codeRows.length) throw new AnalyticsEntryError('ANALYTICS_ENTRY_CODE_CONFLICT');
+    const { rows: identityRows } = await this.database.query<{ id: string }>(
+      `SELECT id FROM analytics_episodes
+       WHERE tenant_id = $1 AND series_id = $2 AND COALESCE(season_number, 0) = $3 AND episode_number = $4 AND id <> $5`,
+      [tenantId, input.seriesId, input.seasonNumber ?? 0, input.episodeNumber, input.episodeId],
+    );
+    if (identityRows.length) throw new AnalyticsEntryError('ANALYTICS_ENTRY_EPISODE_CONFLICT');
+    const { rowCount } = await this.database.query(
+      `UPDATE analytics_episodes
+       SET season_number = $3, episode_number = $4, episode_code = $5,
+           production_cost_amount = $6, production_time_seconds = $7
+       WHERE tenant_id = $1 AND id = $2`,
+      [
+        tenantId, input.episodeId, input.seasonNumber, input.episodeNumber, episodeCode,
+        input.productionCost?.amount ?? null, input.productionTimeSeconds,
+      ],
+    );
+    if (rowCount !== 1) throw new AnalyticsEntryError('ANALYTICS_ENTRY_EPISODE_NOT_FOUND');
+    const episode = await this.findEpisodeById(tenantId, input.episodeId);
+    if (!episode) throw new AnalyticsEntryError('ANALYTICS_ENTRY_EPISODE_NOT_FOUND');
+    return episode;
+  }
+
+  async replaceEpisodePublicationLink(
+    tenantId: string,
+    input: Parameters<AnalyticsEntryRepository['replaceEpisodePublicationLink']>[1],
+  ): Promise<{ readonly replaced: boolean }> {
+    const next = input.next;
+    if (!input.episodeId || !input.socialAccountId || !input.externalPublicationId?.trim()
+      || (next !== null && (!next || !next.socialAccountId || !next.externalPublicationId?.trim()))
+      || !Number.isFinite(Date.parse(input.at))) {
+      throw new AnalyticsEntryError('ANALYTICS_ENTRY_INPUT_INVALID');
+    }
+
+    return this.database.transaction(async (transaction) => {
+      const { rows: currentRows } = await transaction.query<{ episode_id: string; platform: string }>(
+        `SELECT episode_id, platform FROM analytics_episode_publication_links
+         WHERE tenant_id = $1 AND social_account_id = $2 AND external_publication_id = $3`,
+        [tenantId, input.socialAccountId, input.externalPublicationId],
+      );
+      const current = currentRows[0];
+      if (current?.episode_id !== input.episodeId) {
+        const episode = await transaction.query<{ id: string }>(
+          'SELECT id FROM analytics_episodes WHERE tenant_id = $1 AND id = $2',
+          [tenantId, input.episodeId],
+        );
+        throw new AnalyticsEntryError(
+          episode.rows[0] ? 'ANALYTICS_ENTRY_PUBLICATION_NOT_LINKED' : 'ANALYTICS_ENTRY_EPISODE_NOT_FOUND',
+        );
+      }
+
+      if (next === null) {
+        await transaction.query(
+          `DELETE FROM analytics_episode_publication_links
+           WHERE tenant_id = $1 AND social_account_id = $2 AND external_publication_id = $3`,
+          [tenantId, input.socialAccountId, input.externalPublicationId],
+        );
+        return { replaced: false };
+      }
+
+      const { rows: targetRows } = await transaction.query<{ platform: string; linked_episode_id: string | null }>(
+        `SELECT publication.platform, linked.episode_id AS linked_episode_id
+         FROM social_publications AS publication
+         LEFT JOIN analytics_episode_publication_links AS linked
+           ON linked.tenant_id = publication.tenant_id
+          AND linked.social_account_id = publication.social_account_id
+          AND linked.external_publication_id = publication.external_publication_id
+         WHERE publication.tenant_id = $1 AND publication.social_account_id = $2
+           AND publication.external_publication_id = $3`,
+        [tenantId, next.socialAccountId, next.externalPublicationId],
+      );
+      const target = targetRows[0];
+      if (!target) throw new AnalyticsEntryError('ANALYTICS_ENTRY_PUBLICATION_NOT_FOUND');
+      if (target.linked_episode_id) throw new AnalyticsEntryError('ANALYTICS_ENTRY_PUBLICATION_ALREADY_LINKED');
+      if (target.platform !== current.platform) {
+        throw new AnalyticsEntryError('ANALYTICS_ENTRY_PLATFORM_UNSUPPORTED');
+      }
+
+      await transaction.query(
+        `INSERT INTO analytics_episode_publication_links (
+           tenant_id, episode_id, social_account_id, external_publication_id, platform, linked_at, linked_by
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [tenantId, input.episodeId, next.socialAccountId, next.externalPublicationId, current.platform, input.at, input.actorId],
+      );
+      await transaction.query(
+        `UPDATE analytics_performance_observations
+         SET social_account_id = $4, external_publication_id = $5
+         WHERE tenant_id = $1 AND social_account_id = $2 AND external_publication_id = $3`,
+        [tenantId, input.socialAccountId, input.externalPublicationId, next.socialAccountId, next.externalPublicationId],
+      );
+      await transaction.query(
+        `DELETE FROM analytics_episode_publication_links
+         WHERE tenant_id = $1 AND social_account_id = $2 AND external_publication_id = $3`,
+        [tenantId, input.socialAccountId, input.externalPublicationId],
+      );
+      return { replaced: true };
+    });
+  }
+
+  async moveEpisodePublicationLink(
+    tenantId: string,
+    input: Parameters<AnalyticsEntryRepository['moveEpisodePublicationLink']>[1],
+  ): Promise<{ readonly moved: boolean }> {
+    const target = input.target;
+    if (!input.episodeId || !input.socialAccountId || !input.externalPublicationId?.trim()
+      || !target || !Number.isSafeInteger(target.episodeNumber) || target.episodeNumber < 1
+      || (target.seasonNumber !== null
+        && (!Number.isSafeInteger(target.seasonNumber) || target.seasonNumber < 1))
+      || !Number.isFinite(Date.parse(input.at))) {
+      throw new AnalyticsEntryError('ANALYTICS_ENTRY_INPUT_INVALID');
+    }
+
+    return this.database.transaction(async (transaction) => {
+      const { rows: currentRows } = await transaction.query<{ episode_id: string; series_id: string }>(
+        `SELECT link.episode_id, episode.series_id
+         FROM analytics_episode_publication_links AS link
+         JOIN analytics_episodes AS episode
+           ON episode.tenant_id = link.tenant_id AND episode.id = link.episode_id
+         WHERE link.tenant_id = $1 AND link.social_account_id = $2 AND link.external_publication_id = $3`,
+        [tenantId, input.socialAccountId, input.externalPublicationId],
+      );
+      const current = currentRows[0];
+      if (current?.episode_id !== input.episodeId) {
+        const { rows: episodeRows } = await transaction.query<{ id: string }>(
+          'SELECT id FROM analytics_episodes WHERE tenant_id = $1 AND id = $2',
+          [tenantId, input.episodeId],
+        );
+        throw new AnalyticsEntryError(
+          episodeRows[0] ? 'ANALYTICS_ENTRY_PUBLICATION_NOT_LINKED' : 'ANALYTICS_ENTRY_EPISODE_NOT_FOUND',
+        );
+      }
+      const { rows: targetRows } = await transaction.query<{ id: string }>(
+        `SELECT id FROM analytics_episodes
+         WHERE tenant_id = $1 AND series_id = $2 AND COALESCE(season_number, 0) = $3 AND episode_number = $4`,
+        [tenantId, current.series_id, target.seasonNumber ?? 0, target.episodeNumber],
+      );
+      const targetEpisode = targetRows[0];
+      if (!targetEpisode) throw new AnalyticsEntryError('ANALYTICS_ENTRY_EPISODE_NOT_FOUND');
+
+      await transaction.query(
+        `UPDATE analytics_episode_publication_links
+         SET episode_id = $4
+         WHERE tenant_id = $1 AND social_account_id = $2 AND external_publication_id = $3`,
+        [tenantId, input.socialAccountId, input.externalPublicationId, targetEpisode.id],
+      );
+      await transaction.query(
+        `UPDATE analytics_performance_observations
+         SET episode_id = $4
+         WHERE tenant_id = $1 AND social_account_id = $2 AND external_publication_id = $3`,
+        [tenantId, input.socialAccountId, input.externalPublicationId, targetEpisode.id],
+      );
+      return { moved: targetEpisode.id !== input.episodeId };
+    });
   }
 
   async updateEpisodeEconomics(

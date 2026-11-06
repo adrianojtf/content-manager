@@ -59,7 +59,7 @@ test('loading the semi-automatic queue syncs all pages for one publication and e
   assert.equal(result.allComments.length, 5);
 });
 
-test('generation evaluates only missing analyses, processes comments sequentially, and keeps failures isolated', async () => {
+test('generation evaluates only missing analyses, keeps per-comment call order and failures isolated', async () => {
   const calls = [];
   const eventsByComment = new Map([
     ['has-analysis', [{ id: 'analysis-existing', eventType: 'COMMENT_ANALYSIS_CREATED', status: 'SUCCEEDED', payload: {} }]],
@@ -109,27 +109,59 @@ test('generation evaluates only missing analyses, processes comments sequentiall
     onProgress: (update) => progress.push([update.commentId, update.phase]),
   });
 
-  assert.deepEqual(calls, [
-    ['workflow', 'has-analysis'],
-    ['generate', 'has-analysis', { analysisEventId: 'analysis-existing', toneOverride: toneProfile.primaryTone }],
-    ['workflow', 'has-analysis'],
-    ['workflow', 'needs-analysis'],
-    ['classify', 'needs-analysis'],
-    ['workflow', 'needs-analysis'],
-    ['generate', 'needs-analysis', { analysisEventId: 'analysis-new', toneOverride: 'CASUAL' }],
-    ['workflow', 'needs-analysis'],
-    ['workflow', 'analysis-fails'],
-    ['classify', 'analysis-fails'],
-    ['workflow', 'analysis-fails'],
-  ]);
+  const operationsFor = (commentId) => calls
+    .filter(([, id]) => id === commentId)
+    .map(([operation]) => operation);
+  assert.deepEqual(operationsFor('has-analysis'), ['workflow', 'generate']);
+  assert.deepEqual(operationsFor('needs-analysis'), ['workflow', 'classify', 'generate']);
+  assert.deepEqual(operationsFor('analysis-fails'), ['workflow', 'classify', 'workflow']);
+  const generateCalls = new Map(calls
+    .filter(([operation]) => operation === 'generate')
+    .map(([, commentId, options]) => [commentId, options]));
+  assert.deepEqual(generateCalls.get('has-analysis'), { analysisEventId: 'analysis-existing', toneOverride: toneProfile.primaryTone });
+  assert.deepEqual(generateCalls.get('needs-analysis'), { analysisEventId: 'analysis-new', toneOverride: 'CASUAL' });
   assert.deepEqual(rows.map((row) => row.status), ['ready', 'ready', 'failed']);
   assert.equal(rows[2].errorCode, 'INTELLIGENCE_PROVIDER_UNAVAILABLE');
-  assert.deepEqual(progress.filter(([, phase]) => phase !== 'completed').slice(0, 4), [
-    ['has-analysis', 'loading-history'],
-    ['has-analysis', 'generating'],
-    ['needs-analysis', 'loading-history'],
-    ['needs-analysis', 'evaluating'],
-  ]);
+  for (const commentId of ['has-analysis', 'needs-analysis', 'analysis-fails']) {
+    const phases = progress.filter(([id, phase]) => id === commentId && phase !== 'completed').map(([, phase]) => phase);
+    assert.equal(phases[0], 'loading-history');
+    assert.ok(phases.at(-1) === 'generating' || commentId === 'analysis-fails');
+  }
+});
+
+test('generation processes comments with bounded concurrency', async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const api = {
+    getWorkflow: async () => [{ id: 'analysis-1', eventType: 'COMMENT_ANALYSIS_CREATED', status: 'SUCCEEDED', payload: {} }],
+    generateResponse: async (accountId, commentId) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return {
+        variants: [{ id: `suggestion-${commentId}`, eventType: 'RESPONSE_SUGGESTION_GENERATED', status: 'SUCCEEDED', payload: { language: 'pt-BR' } }],
+        failures: [],
+      };
+    },
+  };
+  const comments = Array.from({ length: 9 }, (_, index) => ({
+    socialAccountId: 'account-1',
+    externalCommentId: `comment-${index}`,
+    externalReplyStatus: 'NOT_REPLIED',
+    appReplied: false,
+  }));
+
+  const rows = await generateSemiAutomaticReplies(api, {
+    accountId: 'account-1',
+    comments,
+    toneProfile,
+    concurrency: 3,
+  });
+
+  assert.equal(peak, 3);
+  assert.deepEqual(rows.map((row) => row.comment.externalCommentId), comments.map((comment) => comment.externalCommentId));
+  assert.ok(rows.every((row) => row.status === 'ready'));
 });
 
 test('bulk approval appends only changed response revisions and never sends replies', async () => {
@@ -376,7 +408,7 @@ test('send-all stops after a platform rate limit and leaves remaining approved r
   assert.equal(rows[2].status, 'approved');
 });
 
-test('generated variants remain available when the follow-up history read fails', async () => {
+test('generated variants are merged into row history without a follow-up history read', async () => {
   const analysis = { id: 'analysis-1', eventType: 'COMMENT_ANALYSIS_CREATED', status: 'SUCCEEDED', payload: {} };
   const suggestion = {
     id: 'suggestion-1',
@@ -388,7 +420,6 @@ test('generated variants remain available when the follow-up history read fails'
   const api = {
     getWorkflow: async () => {
       historyReads += 1;
-      if (historyReads > 1) throw Object.assign(new Error('unavailable'), { code: 'API_UNAVAILABLE' });
       return [analysis];
     },
     generateResponse: async () => ({ variants: [suggestion], failures: [] }),
@@ -401,8 +432,35 @@ test('generated variants remain available when the follow-up history read fails'
   });
 
   assert.equal(rows[0].status, 'ready');
-  assert.equal(rows[0].historyWarning, true);
-  assert.equal(rows[0].events.at(-1).id, 'suggestion-1');
+  assert.equal(rows[0].historyWarning, false);
+  assert.equal(historyReads, 1);
+  assert.deepEqual(rows[0].events.map((event) => event.id), ['analysis-1', 'suggestion-1']);
+});
+
+test('generation reuses cached workflow events instead of reloading history', async () => {
+  const analysis = { id: 'analysis-1', eventType: 'COMMENT_ANALYSIS_CREATED', status: 'SUCCEEDED', payload: {} };
+  const suggestion = {
+    id: 'suggestion-1',
+    eventType: 'RESPONSE_SUGGESTION_GENERATED',
+    status: 'SUCCEEDED',
+    payload: { language: 'pt-BR', text: 'Saved suggestion' },
+  };
+  let historyReads = 0;
+  const api = {
+    getWorkflow: async () => { historyReads += 1; return [analysis]; },
+    generateResponse: async () => ({ variants: [suggestion], failures: [] }),
+  };
+
+  const rows = await generateSemiAutomaticReplies(api, {
+    accountId: 'account-1',
+    comments: [{ externalCommentId: 'comment-1' }],
+    toneProfile,
+    eventsForComment: () => [analysis],
+  });
+
+  assert.equal(historyReads, 0);
+  assert.equal(rows[0].status, 'ready');
+  assert.deepEqual(rows[0].events.map((event) => event.id), ['analysis-1', 'suggestion-1']);
 });
 
 test('tone regeneration reuses the existing analysis and only generates new suggestions', async () => {

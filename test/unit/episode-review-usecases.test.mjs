@@ -49,6 +49,12 @@ function makeHarness({
   pendingSuggestions = [],
   series = [],
   classify = async () => classifierResult(),
+  verifyEpisodeIdentity = async () => ({ verdict: 'VALID', confidence: 0.9, model: 'jev-test-model', usage: null }),
+  extractEpisodeIdentity = async () => ({
+    seriesRef: null, seasonNumber: null, episodeNumber: null, episodeCode: null,
+    confidence: null, model: 'jev-test-model', usage: null,
+  }),
+  seriesCatalog = [],
   approveGroup = async (tenant, input) => ({ tenantId: tenant, ...input }),
   confirmSeries = async (tenant, ids, series) => ({ tenantId: tenant, ids, series }),
   confirmSeasons = async (tenant, ids, seasonNumber) => ids.length,
@@ -62,13 +68,24 @@ function makeHarness({
     saveSuggestion: async (...args) => { calls.push(['saveSuggestion', ...args]); },
     listPendingSuggestions: async (tenant) => { calls.push(['listPendingSuggestions', tenant]); return pendingSuggestions; },
     listSeries: async (tenant) => { calls.push(['listSeries', tenant]); return series; },
+    listSeriesCatalog: async (tenant) => { calls.push(['listSeriesCatalog', tenant]); return seriesCatalog; },
     findSeriesById: async (tenant, id) => { calls.push(['findSeriesById', tenant, id]); return series.find((item) => item.id === id) ?? null; },
     approveGroup: async (...args) => { calls.push(['approveGroup', ...args]); return approveGroup(...args); },
     confirmSetupSeries: async (...args) => { calls.push(['confirmSeries', ...args]); return confirmSeries(...args); },
     confirmSetupSeason: async (...args) => { calls.push(['confirmSeasons', ...args]); return confirmSeasons(...args); },
     decideSuggestions: async (...args) => { calls.push(['decideSuggestions', ...args]); return decideSuggestions(...args); },
   };
-  const classifier = { classify: async (...args) => { calls.push(['classify', ...args]); return classify(...args); } };
+  const classifier = {
+    classify: async (...args) => { calls.push(['classify', ...args]); return classify(...args); },
+    verifyEpisodeIdentity: async (...args) => {
+      calls.push(['verifyEpisodeIdentity', ...args]);
+      return verifyEpisodeIdentity(...args);
+    },
+    extractEpisodeIdentity: async (...args) => {
+      calls.push(['extractEpisodeIdentity', ...args]);
+      return extractEpisodeIdentity(...args);
+    },
+  };
   const localization = {
     getSupportedLocales: () => ['pt-BR', 'en-US', 'es-ES'],
     translate: (key, locale) => `${locale}:${key}`,
@@ -186,7 +203,7 @@ test('GetEpisodeReview can extract a series name from a description without an e
   assert.equal(result.seriesProposals[0].suggestedName, 'Finge que me Ama');
 });
 
-test('Obsidiana: O Legado resolves to the Obsidiana series and proposes season 2', async () => {
+test('named arc titles surface as generic candidates and leave the season for creator or model resolution', async () => {
   const source = {
     id: 'obsidiana-legacy-suggestion',
     socialAccountId: accountId,
@@ -199,7 +216,7 @@ test('Obsidiana: O Legado resolves to the Obsidiana series and proposes season 2
       description: '🐺 OBSIDIANA: O LEGADO | Ep. 20 — A Escolha',
     },
     identity: {
-      seriesName: 'Obsidiana O Legado',
+      seriesName: 'OBSIDIANA: O LEGADO',
       seasonNumber: null,
       seasonStatus: 'UNKNOWN',
       episodeNumber: 20,
@@ -219,14 +236,14 @@ test('Obsidiana: O Legado resolves to the Obsidiana series and proposes season 2
       setupSeriesId: 'series-obsidiana',
       setupSeriesConfirmedAt: '2026-10-15T12:00:00.000Z',
     }],
-    series: [{ id: 'series-obsidiana', name: 'Obsidiana', aliases: [], seasonMode: 'SEASONAL' }],
+    series: [{ id: 'series-obsidiana', name: 'Obsidiana', aliases: ['Obsidiana: O Legado'], seasonMode: 'SEASONAL' }],
   }).list.execute();
 
   assert.equal(seriesStage.stage, 'SERIES');
-  assert.equal(seriesStage.seriesProposals[0].suggestedName, 'Obsidiana');
+  assert.equal(seriesStage.seriesProposals[0].suggestedName, 'OBSIDIANA: O LEGADO');
   assert.equal(seasonStage.stage, 'SEASONS');
   assert.equal(seasonStage.seasonProposals[0].seriesName, 'Obsidiana');
-  assert.equal(seasonStage.seasonProposals[0].proposedSeasonNumber, 2);
+  assert.equal(seasonStage.seasonProposals[0].proposedSeasonNumber, null);
 });
 
 test('episode setup confirms series and seasons through tenant-scoped use cases', async () => {
@@ -531,6 +548,11 @@ test('ApproveEpisodeSuggestionGroup validates season mode and derives tenant and
   assert.equal(command.actorId, 'LOCAL_PILOT_CREATOR');
   assert.equal(command.seasonNumber, 2);
   assert.equal(valid.tenantId, tenantId);
+
+  await harness.approve.execute({ ...invalidSeason, seasonNumber: 2, episodeCode: undefined });
+  const approvalCalls = harness.calls.filter(([name]) => name === 'approveGroup');
+  assert.equal(approvalCalls.at(-1)[2].episodeNumber, 8);
+  assert.equal(approvalCalls.at(-1)[2].episodeCode, null);
 });
 
 test('ApproveEpisodeSuggestionGroup requires an explicit series and positive episode identity', async () => {
@@ -574,4 +596,93 @@ test('DecideEpisodeSuggestions accepts only reject/defer decisions and scopes th
   assert.deepEqual(ids, ['suggestion-1', 'suggestion-2']);
   assert.equal(decision, 'DEFERRED');
   assert.equal(actorId, 'LOCAL_PILOT_CREATOR');
+});
+
+test('RefreshEpisodeSuggestions reads the tenant series catalog once and persists cascade provenance', async () => {
+  const seriesCatalog = [
+    { id: 'series-1', name: 'FQA', aliases: [], seasonMode: 'SEASONAL', knownSeasonNumbers: [2] },
+  ];
+  const harness = makeHarness({
+    publications: [publication('fresh')],
+    seriesCatalog,
+  });
+
+  const result = await harness.refresh.execute();
+
+  assert.equal(result.classified, 1);
+  assert.deepEqual(harness.calls.filter(([name]) => name === 'listSeriesCatalog'), [['listSeriesCatalog', tenantId]]);
+  const verifyCall = harness.calls.find(([name]) => name === 'verifyEpisodeIdentity');
+  assert.equal(verifyCall[1].identity.episodeCode, 'FQA-E08');
+  const [, , saved] = harness.calls.find(([name]) => name === 'saveSuggestion');
+  assert.equal(saved.identitySource, 'JEV_VERIFIED');
+  assert.equal(saved.identityAudit.catalogSize, 1);
+  assert.equal(saved.identityAudit.verification.verdict, 'VALID');
+});
+
+test('RefreshEpisodeSuggestions escalates a rejected deterministic identity into a catalog extraction', async () => {
+  const seriesCatalog = [
+    { id: 'series-1', name: 'FQA', aliases: [], seasonMode: 'SEASONAL', knownSeasonNumbers: [2] },
+  ];
+  const harness = makeHarness({
+    publications: [publication('fresh')],
+    seriesCatalog,
+    verifyEpisodeIdentity: async () => ({ verdict: 'INVALID', confidence: 0.92, model: 'jev-test-model', usage: null }),
+    extractEpisodeIdentity: async ({ seriesCatalog: catalog }) => ({
+      seriesRef: { type: 'existing', seriesId: catalog[0].id },
+      seasonNumber: 2,
+      episodeNumber: 8,
+      episodeCode: 'FQA-S02-E08',
+      confidence: 0.81,
+      model: 'jev-test-model',
+      usage: null,
+    }),
+  });
+
+  await harness.refresh.execute();
+
+  const extractCall = harness.calls.find(([name]) => name === 'extractEpisodeIdentity');
+  assert.deepEqual(extractCall[1].seriesCatalog, seriesCatalog);
+  const [, , saved] = harness.calls.find(([name]) => name === 'saveSuggestion');
+  assert.equal(saved.identitySource, 'JEV_EXTRACTED');
+  assert.deepEqual(saved.identity, {
+    seriesName: 'FQA',
+    seasonNumber: 2,
+    seasonStatus: 'NUMBERED',
+    episodeNumber: 8,
+    episodeCode: 'FQA-S02-E08',
+  });
+});
+
+test('GetEpisodeReview keeps persisted model-extracted identities instead of re-deriving them', async () => {
+  const pending = [{
+    id: 'jev-extracted-suggestion',
+    socialAccountId: accountId,
+    classification: 'EPISODE',
+    confidence: 0.9,
+    identitySource: 'JEV_EXTRACTED',
+    publication: {
+      platform: 'instagram',
+      externalPublicationId: 'post-model',
+      title: 'FQA-E08',
+      description: 'A new episode',
+    },
+    identity: {
+      seriesName: 'Série do Modelo',
+      seasonNumber: 3,
+      seasonStatus: 'NUMBERED',
+      episodeNumber: 4,
+      episodeCode: 'MOD-S03-E04',
+    },
+    setupSeriesId: null,
+    setupSeriesConfirmedAt: null,
+    setupSeasonNumber: null,
+    setupSeasonConfirmedAt: null,
+    rationaleVariants: {},
+    rationaleFailures: {},
+  }];
+
+  const result = await makeHarness({ pendingSuggestions: pending }).list.execute();
+
+  assert.equal(result.stage, 'SERIES');
+  assert.equal(result.seriesProposals[0].suggestedName, 'Série do Modelo');
 });

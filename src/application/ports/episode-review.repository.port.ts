@@ -4,6 +4,7 @@ import type {
 import type { SocialAccountId } from '../../domain/social/social-account-id';
 import type { SocialPlatform } from '../../domain/social/social-account';
 import type { ExplicitEpisodeIdentity } from '../../domain/analytics/episode-identity';
+import type { EpisodeIdentitySeriesCatalogEntry } from './publication-episode-classifier.port';
 
 export type EpisodeReviewSeasonMode = 'SEASONAL' | 'NON_SEASONAL';
 export type EpisodeSuggestionStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'DEFERRED' | 'SUPERSEDED' | 'NOT_EPISODE';
@@ -67,7 +68,7 @@ export interface EpisodeReviewApprovalCommand {
   };
   readonly seasonNumber: number | null;
   readonly episodeNumber: number;
-  readonly episodeCode: string;
+  readonly episodeCode: string | null;
   readonly actorId: string;
   readonly decidedAt: string;
 }
@@ -91,6 +92,7 @@ export interface EpisodeReviewRepository {
   ): Promise<void>;
   listPendingSuggestions(tenantId: string): Promise<readonly EpisodeReviewSuggestion[]>;
   listSeries(tenantId: string): Promise<readonly EpisodeReviewSeries[]>;
+  listSeriesCatalog(tenantId: string): Promise<readonly EpisodeIdentitySeriesCatalogEntry[]>;
   findSeriesById(tenantId: string, seriesId: string): Promise<EpisodeReviewSeries | null>;
   confirmSetupSeries(
     tenantId: string,

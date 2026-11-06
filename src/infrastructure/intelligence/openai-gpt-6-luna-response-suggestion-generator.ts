@@ -32,6 +32,7 @@ interface SuggestionTextOutput {
 }
 
 const defaultModel = 'gpt-6-luna';
+const promptVersion = 'openai-response-v1';
 const responseSchema = {
   type: 'object',
   properties: {
@@ -143,6 +144,7 @@ export class OpenAIGpt6LunaResponseSuggestionGenerator implements ResponseSugges
       intendedTone: output.intendedTone,
       provider: 'OPENAI',
       model: config.model,
+      promptVersion,
       confidence: output.confidence,
       rationale: output.rationale || null,
     };

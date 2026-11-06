@@ -5,6 +5,7 @@ import test from 'node:test';
 const require = createRequire(import.meta.url);
 const {
   extractExplicitEpisodeIdentity,
+  generateCanonicalEpisodeCode,
   groupEpisodePublicationSuggestions,
   normalizeSeriesIdentity,
 } = require('../../dist/domain/analytics/episode-identity.js');
@@ -14,6 +15,21 @@ const publicationSuggestion = (platform, externalPublicationId, classification, 
   confidence: 0.9,
   publication: { platform, externalPublicationId, title: null, description: null },
   identity,
+});
+
+test('canonical episode codes are deterministic from series, season, and episode identity', () => {
+  assert.equal(
+    generateCanonicalEpisodeCode('5b7f1f84-25a8-4bd8-a7df-680dc4400010', 2, 8),
+    'EP-5B7F1F8425A84BD8A7DF680DC4400010-S02-E08',
+  );
+  assert.equal(
+    generateCanonicalEpisodeCode('5b7f1f84-25a8-4bd8-a7df-680dc4400010', null, 12),
+    'EP-5B7F1F8425A84BD8A7DF680DC4400010-E12',
+  );
+  assert.notEqual(
+    generateCanonicalEpisodeCode('5b7f1f84-25a8-4bd8-a7df-680dc4400011', 2, 8),
+    generateCanonicalEpisodeCode('5b7f1f84-25a8-4bd8-a7df-680dc4400010', 2, 8),
+  );
 });
 
 test('episode identity extraction distinguishes explicit seasons from unknown season metadata', () => {
@@ -170,6 +186,8 @@ test('series identity extraction prefers episode headers and series names follow
 
 test('series normalization groups only positive episode classifications with matching identity', () => {
   assert.equal(normalizeSeriesIdentity('  NOVA SÁGA! '), 'nova saga');
+  assert.equal(normalizeSeriesIdentity('Fora de Roteiro'), normalizeSeriesIdentity('Fora Do Roteiro'));
+  assert.equal(normalizeSeriesIdentity('Elara E Lucius'), 'elara lucius');
   const grouped = groupEpisodePublicationSuggestions([
     publicationSuggestion('instagram', 'ig-8', 'EPISODE', {
       seriesName: 'Nova Saga',
@@ -232,14 +250,14 @@ test('series normalization groups only positive episode classifications with mat
   assert.deepEqual(grouped.unmatched.map(({ publication }) => publication.externalPublicationId), ['tt-9', 'fb-uncertain', 'ig-other-series']);
 });
 
-test('named Obsidiana arcs resolve to the canonical series and creator-confirmable season', () => {
+test('named arc titles surface as generic deterministic candidates without series-specific rules', () => {
   assert.deepEqual(extractExplicitEpisodeIdentity(
     null,
     '🐺 OBSIDIANA: O LEGADO | Ep. 19 — A Escolha',
   ), {
-    seriesName: 'Obsidiana',
-    seasonNumber: 2,
-    seasonStatus: 'NUMBERED',
+    seriesName: 'OBSIDIANA: O LEGADO',
+    seasonNumber: null,
+    seasonStatus: 'UNKNOWN',
     episodeNumber: 19,
     episodeCode: null,
   });
@@ -247,20 +265,10 @@ test('named Obsidiana arcs resolve to the canonical series and creator-confirmab
     null,
     '🐉 OBSIDIANA Véspera sempre soube que havia algo diferente nela.',
   ), {
-    seriesName: 'Obsidiana',
+    seriesName: null,
     seasonNumber: null,
     seasonStatus: 'UNKNOWN',
     episodeNumber: null,
-    episodeCode: null,
-  });
-  assert.deepEqual(extractExplicitEpisodeIdentity(
-    null,
-    '🐺 OBSIDIANA: O LEGADO | Ep. 19 — A Escolha',
-  ), {
-    seriesName: 'Obsidiana',
-    seasonNumber: 2,
-    seasonStatus: 'NUMBERED',
-    episodeNumber: 19,
     episodeCode: null,
   });
   assert.deepEqual(extractExplicitEpisodeIdentity(
@@ -274,16 +282,16 @@ test('named Obsidiana arcs resolve to the canonical series and creator-confirmab
     episodeCode: null,
   });
   assert.deepEqual(extractExplicitEpisodeIdentity(null, '🐺 OBSIDIANA: O LEGADO | #ObsidianaOLegado | EP. 20'), {
-    seriesName: 'Obsidiana',
-    seasonNumber: 2,
-    seasonStatus: 'NUMBERED',
+    seriesName: 'OBSIDIANA: O LEGADO | #ObsidianaOLegado',
+    seasonNumber: null,
+    seasonStatus: 'UNKNOWN',
     episodeNumber: 20,
     episodeCode: null,
   });
   assert.deepEqual(extractExplicitEpisodeIdentity(null, '#Obsidiana #OLegado'), {
     seriesName: 'Obsidiana',
-    seasonNumber: 2,
-    seasonStatus: 'NUMBERED',
+    seasonNumber: null,
+    seasonStatus: 'UNKNOWN',
     episodeNumber: null,
     episodeCode: null,
   });
@@ -291,9 +299,9 @@ test('named Obsidiana arcs resolve to the canonical series and creator-confirmab
     null,
     '1ª temporada — OBSIDIANA',
   ), {
-    seriesName: 'Obsidiana',
-    seasonNumber: 1,
-    seasonStatus: 'NUMBERED',
+    seriesName: null,
+    seasonNumber: null,
+    seasonStatus: 'UNKNOWN',
     episodeNumber: null,
     episodeCode: null,
   });
@@ -353,4 +361,30 @@ test('conflicting explicit episode codes remain ungrouped for creator review', (
   assert.equal(grouped.groups.length, 0);
   assert.equal(grouped.unmatched.length, 2);
   assert.ok(grouped.unmatched.every((item) => item.unmatchedReason === 'IDENTITY_CONFLICT'));
+});
+
+test('character-pair names lose to series-looking hashtags, and single-word tags need non-generic company', () => {
+  assert.deepEqual(extractExplicitEpisodeIdentity(
+    null,
+    'Elara finalmente descobre a verdade sobre Lucius. #NoveladeIA #Obsidiana #OLegado #ElaraELucius',
+  ).seriesName, 'Obsidiana');
+  assert.equal(extractExplicitEpisodeIdentity(
+    null,
+    'Bastidores da gravação de hoje #Novelaria #Studionovelaria',
+  ).seriesName, null);
+});
+
+test('named-series cues require a capitalized candidate and stop before temporal prose', () => {
+  assert.equal(extractExplicitEpisodeIdentity(
+    null,
+    'Para Lucius, atravessar aquele portal significa finalmente conhecer o mundo de Elara. #Obsidiana #ObsidianaOLegado',
+  ).seriesName, 'Obsidiana O Legado');
+  assert.equal(extractExplicitEpisodeIdentity(
+    null,
+    'Véspera quer conhecer o rapaz que conquistou sua filha. #Obsidiana #ObsidianaOLegado',
+  ).seriesName, 'Obsidiana O Legado');
+  assert.equal(extractExplicitEpisodeIdentity(
+    null,
+    'Ele quer conhecer Obsidiana amanhã.',
+  ).seriesName, 'Obsidiana');
 });

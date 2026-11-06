@@ -76,7 +76,7 @@ test('Gemini Flash-Lite sends one bounded structured request and returns provide
 
   const result = await generator.generate(input);
 
-  assert.deepEqual(result, { ...generated, language: 'pt-BR', provider: 'GEMINI', model: 'gemini-3.5-flash-lite' });
+  assert.deepEqual(result, { ...generated, language: 'pt-BR', provider: 'GEMINI', model: 'gemini-3.5-flash-lite', promptVersion: 'gemini-response-v1' });
   assert.equal(requests[0].url.toString(), 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent');
   assert.equal(requests[0].init.headers['x-goog-api-key'], 'gemini-test-secret');
   const body = JSON.parse(requests[0].init.body);

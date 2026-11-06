@@ -8,9 +8,15 @@ import type {
   EpisodeReviewSourceState,
   EpisodeReviewSuggestion,
 } from '../../application/ports/episode-review.repository.port';
+import type { EpisodeIdentitySeriesCatalogEntry } from '../../application/ports/publication-episode-classifier.port';
 import type { RelationalDatabase, RelationalQueryExecutor } from '../../application/ports/relational-database.port';
 import { EpisodeReviewError } from '../../application/analytics/episode-review-error';
-import { extractExplicitEpisodeIdentity, normalizeSeriesIdentity } from '../../domain/analytics/episode-identity';
+import {
+  extractExplicitEpisodeIdentity,
+  generateCanonicalEpisodeCode,
+  normalizeSeriesIdentity,
+  type ExplicitEpisodeIdentity,
+} from '../../domain/analytics/episode-identity';
 import { parseSocialAccountId, type SocialAccountId } from '../../domain/social/social-account-id';
 import type { SocialPlatform } from '../../domain/social/social-account';
 import type { ClassifiedPublicationEpisodeSuggestion } from '../../application/analytics/classify-imported-publication';
@@ -39,6 +45,8 @@ interface SuggestionRow extends Record<string, unknown> {
   confidence: number | null;
   probabilities_json: string | null;
   identity_json: string;
+  identity_source: string | null;
+  identity_audit_json: string | null;
   rationale_variants_json: string;
   rationale_failures_json: string;
   evidence_json: string | null;
@@ -122,11 +130,12 @@ export class PostgresEpisodeReviewRepository implements EpisodeReviewRepository 
         `INSERT INTO analytics_episode_suggestions (
            id, tenant_id, social_account_id, external_publication_id, platform, source_fingerprint,
            title, description, permalink, thumbnail_url, published_at, classification, confidence,
-           probabilities_json, identity_json, rationale_variants_json, rationale_failures_json,
+           probabilities_json, identity_json, identity_source, identity_audit_json,
+           rationale_variants_json, rationale_failures_json,
            evidence_json, provider, model, schema_version, usage_json, status, created_at
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-           $19, $20, $21, $22, $23, $24
+           $19, $20, $21, $22, $23, $24, $25, $26
          )
          ON CONFLICT (tenant_id, social_account_id, external_publication_id, source_fingerprint) DO NOTHING`,
         [
@@ -145,6 +154,8 @@ export class PostgresEpisodeReviewRepository implements EpisodeReviewRepository 
           suggestion.confidence,
           this.json(suggestion.probabilities),
           this.json(suggestion.identity),
+          suggestion.identitySource,
+          this.json(suggestion.identityAudit),
           this.json(suggestion.rationaleVariants),
           this.json(suggestion.rationaleFailures),
           this.json(suggestion.evidence),
@@ -166,7 +177,8 @@ export class PostgresEpisodeReviewRepository implements EpisodeReviewRepository 
               suggestion.title, suggestion.description, suggestion.permalink, suggestion.thumbnail_url,
               account.display_name AS social_account_name,
               suggestion.published_at, suggestion.classification, suggestion.confidence,
-              suggestion.probabilities_json, suggestion.identity_json, suggestion.rationale_variants_json,
+              suggestion.probabilities_json, suggestion.identity_json, suggestion.identity_source,
+              suggestion.identity_audit_json, suggestion.rationale_variants_json,
               suggestion.rationale_failures_json, suggestion.evidence_json, suggestion.provider,
               suggestion.model, suggestion.schema_version, suggestion.usage_json, suggestion.status,
               suggestion.created_at, suggestion.decided_at, suggestion.decision_actor_id,
@@ -195,6 +207,40 @@ export class PostgresEpisodeReviewRepository implements EpisodeReviewRepository 
       [tenantId],
     );
     return rows.map((row) => this.restoreSeries(row));
+  }
+
+  async listSeriesCatalog(tenantId: string): Promise<readonly EpisodeIdentitySeriesCatalogEntry[]> {
+    const [seriesResult, seasonsResult] = await Promise.all([
+      this.database.query<SeriesRow>(
+        `SELECT id, name, aliases_json, season_mode
+         FROM analytics_series
+         WHERE tenant_id = $1
+         ORDER BY normalized_name, id`,
+        [tenantId],
+      ),
+      this.database.query<{ series_id: string; season_number: number }>(
+        `SELECT DISTINCT series_id, season_number
+         FROM analytics_episodes
+         WHERE tenant_id = $1 AND season_number IS NOT NULL
+         ORDER BY series_id, season_number`,
+        [tenantId],
+      ),
+    ]);
+    const seasonsBySeries = new Map<string, number[]>();
+    for (const row of seasonsResult.rows) {
+      const seasonNumber = Number(row.season_number);
+      if (!Number.isSafeInteger(seasonNumber) || seasonNumber < 1) continue;
+      const seasons = seasonsBySeries.get(row.series_id) ?? [];
+      seasons.push(seasonNumber);
+      seasonsBySeries.set(row.series_id, seasons);
+    }
+    return seriesResult.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      aliases: this.parseJson(row.aliases_json),
+      seasonMode: row.season_mode as EpisodeReviewSeasonMode,
+      knownSeasonNumbers: seasonsBySeries.get(row.id) ?? [],
+    }));
   }
 
   async findSeriesById(tenantId: string, seriesId: string): Promise<EpisodeReviewSeries | null> {
@@ -301,7 +347,7 @@ export class PostgresEpisodeReviewRepository implements EpisodeReviewRepository 
       for (const suggestionId of input.suggestionIds) {
         const { rows } = await transaction.query<SuggestionRow>(
         `SELECT id, tenant_id, social_account_id, external_publication_id, platform, classification, status,
-                title, description, identity_json
+                title, description, identity_json, identity_source
            FROM analytics_episode_suggestions
            WHERE tenant_id = $1 AND id = $2`,
           [tenantId, suggestionId],
@@ -335,7 +381,9 @@ export class PostgresEpisodeReviewRepository implements EpisodeReviewRepository 
           throw new EpisodeReviewError('ANALYTICS_EPISODE_INPUT_INVALID');
         }
         confirmedSeriesId = setup.series_id;
-        const identity = extractExplicitEpisodeIdentity(suggestion.title, suggestion.description);
+        const identity = suggestion.identity_source === 'JEV_EXTRACTED' || suggestion.identity_source === 'LEARNED_PATTERN'
+          ? this.parseJson<ExplicitEpisodeIdentity>(suggestion.identity_json)
+          : extractExplicitEpisodeIdentity(suggestion.title, suggestion.description);
         if (identity.episodeNumber !== null && candidateEpisodeNumber !== null
           && identity.episodeNumber !== candidateEpisodeNumber) {
           throw new EpisodeReviewError('ANALYTICS_EPISODE_IDENTITY_CONFLICT');
@@ -371,22 +419,24 @@ export class PostgresEpisodeReviewRepository implements EpisodeReviewRepository 
         || (series.seasonMode === 'NON_SEASONAL' && input.seasonNumber !== null)) {
         throw new EpisodeReviewError('ANALYTICS_EPISODE_INPUT_INVALID');
       }
+      const episodeCode = input.episodeCode
+        ?? generateCanonicalEpisodeCode(series.id, input.seasonNumber, input.episodeNumber);
       let episode = await this.findEpisode(transaction, tenantId, series.id, input.seasonNumber, input.episodeNumber);
       if (!episode) {
-        await this.assertEpisodeCodeAvailable(transaction, tenantId, input.episodeCode);
+        await this.assertEpisodeCodeAvailable(transaction, tenantId, episodeCode);
         const id = randomUUID();
         await transaction.query(
           `INSERT INTO analytics_episodes (
              id, tenant_id, series_id, season_number, episode_number, episode_code, created_at, created_by
            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-          [id, tenantId, series.id, input.seasonNumber, input.episodeNumber, input.episodeCode, input.decidedAt, input.actorId],
+          [id, tenantId, series.id, input.seasonNumber, input.episodeNumber, episodeCode, input.decidedAt, input.actorId],
         );
         episode = {
           id,
           series_id: series.id,
           season_number: input.seasonNumber,
           episode_number: input.episodeNumber,
-          episode_code: input.episodeCode,
+          episode_code: episodeCode,
         };
       }
 
@@ -597,6 +647,8 @@ export class PostgresEpisodeReviewRepository implements EpisodeReviewRepository 
       schemaVersion: row.schema_version,
       usage: this.parseJson(row.usage_json),
       identity: this.parseJson(row.identity_json),
+      identitySource: (row.identity_source ?? null) as EpisodeReviewSuggestion['identitySource'],
+      identityAudit: this.parseJson(row.identity_audit_json),
       rationaleVariants: this.parseJson(row.rationale_variants_json),
       rationaleFailures: this.parseJson(row.rationale_failures_json),
       publication: {

@@ -1,11 +1,11 @@
 # PRD — AI Response Refinement Dataset
 
 **Status:** Draft  
-**Tech spec:** [Technical Specification — AI Response Refinement](../../specifications/technical-response-refinement.md) · **Related PRD:** [Community Management](community-management.md)
+**Tech spec:** [Technical Specification — AI Response Refinement](../../specifications/technical-response-refinement.md) · **Related PRDs:** [Community Management](community-management.md) · [Response Refinement Analysis](response-refinement-analysis.md)
 
 ## 1. Objective
 
-Build a persistent, anonymized dataset that captures every case where a human edited an AI-generated response before sending it. Each record pairs the original AI text with the final text the creator actually sent, plus the metadata needed to learn from the difference — so future response generation can be refined toward what creators really publish.
+Build a persistent, de-identified dataset that captures every case where a human edited an AI-generated response before sending it. Each record pairs the original AI text with the final text the creator actually sent, plus the metadata needed to learn from the difference — so future response generation can be refined toward what creators really publish.
 
 ## 2. User and Problem
 
@@ -18,13 +18,13 @@ The product needs a durable record of human corrections to AI responses to measu
 ## 3. Scope
 
 - When a creator successfully sends a response whose lineage started from an AI suggestion and the sent text differs from the original AI text, persist one append-only record containing both texts and refinement metadata.
-- The dataset is anonymized at write time: it stores the texts and generation metadata but no audience identifiers — no comment author, no external comment/reply IDs, no comment text, and no foreign keys into the comment tables.
+- The dataset excludes direct audience identifiers and comment text, but is not anonymous: it retains tenant/account scope, an internal reply-attempt correlation ID, and response texts that may themselves contain personal or identifying content.
 - The dataset has its own lifecycle independent of the 30-day comment retention: records are not deleted when the source comment expires.
-- Sending remains the approval boundary: a pair is recorded only after the platform confirms a successful reply (`MANUAL_REPLY_RESULT` succeeded). The existing "send = approval" model is unchanged; no separate approval event is introduced.
+- Sending remains the approval boundary: pair capture starts only after the platform confirms a successful reply; the matching `MANUAL_REPLY_RESULT` event is appended afterward when possible. The existing "send = approval" model is unchanged; no separate approval event is introduced.
 - Failed or ambiguous sends, sends of unedited AI text, and sends of creator-authored responses (no AI parent) produce no record.
 - Recording the pair is best-effort: a dataset write failure must never fail, block, or retry an already dispatched reply.
 
-Out of scope for this capability: a review UI for the dataset, automatic prompt/tone changes based on the data, exporting the dataset to external tools, and any feedback loop into JEV. Those may be separately specified later.
+Out of scope for this capture capability: contextual analysis using the retained source comment, a review UI, automatic prompt/tone changes based on the data, and exporting raw pairs. Contextual analysis is specified separately in [Response Refinement Analysis](response-refinement-analysis.md). Prompt/tone changes remain human-controlled.
 
 ## 4. Requirements
 
@@ -34,11 +34,11 @@ After a successful manual send, when the dispatched version belongs to a lineage
 
 ### RR-02 — Preserve refinement context
 
-Each record carries the metadata needed to interpret the edit: platform, response language, AI provider/model, generation confidence and rationale when present, the tone profile snapshot used for generation, the number of human revisions, the optional reason from the last revision, the latest response evaluation when one exists, and derived analysis labels (sentiment/intent/topic) when a comment analysis exists. Raw comment text and audience identifiers are never copied.
+Each record carries the metadata needed to interpret the edit: platform, response language, AI provider/model and prompt version, generation confidence and rationale when present, the tone profile snapshot used for generation, the number of human revisions, the optional reason from the last revision, the latest response evaluation when one exists, and derived analysis labels (sentiment/intent/topic) when a comment analysis exists. Raw comment text and direct audience identifiers are never copied. Historical rows without a prompt version are `UNKNOWN`.
 
-### RR-03 — Anonymize at write time
+### RR-03 — Minimize direct audience identifiers
 
-The record stores only tenant/account scoping, platform, and the fields in RR-02. It must not store the external comment ID, comment author data, external reply ID, or any foreign key to `social_comments`/`comment_workflow_events`, so the pair survives source-comment expiry without retaining audience personal data.
+The record must not store the external comment ID, comment author data, external reply ID, comment text, or any foreign key to `social_comments`/`comment_workflow_events`. Tenant/account scope, the internal attempt ID, and response texts remain confidential data; this design does not guarantee that the text contains no personal information.
 
 ### RR-04 — Independent retention
 
@@ -50,7 +50,7 @@ At most one record exists per manual reply attempt. Retrying or replaying the se
 
 ### RR-06 — Never affect the send path
 
-Pair capture happens after the successful reply result is recorded and is best-effort: failure to write the record is logged/observable but leaves the send result untouched.
+Pair capture happens only after the social platform confirms the reply, but its write may precede persistence of the `MANUAL_REPLY_RESULT` event. Capture is best-effort: a failure never changes the send result. A persisted pair without its matching successful result event is not eligible for contextual analysis.
 
 ## 5. Acceptance Criteria
 
@@ -58,8 +58,8 @@ Pair capture happens after the successful reply result is recorded and is best-e
 - [ ] A successful send of an unedited AI suggestion creates no record.
 - [ ] A successful send of a creator-authored (manual) response creates no record.
 - [ ] A failed, unsupported, or ambiguous send creates no record.
-- [ ] The record preserves platform, language, provider/model, confidence/rationale, tone profile snapshot, revision count, optional last edit reason, latest response evaluation snapshot when present, and derived analysis labels when present.
-- [ ] The record contains no comment author data, no external comment/reply identifiers, no comment text, and no foreign keys to comment-scoped tables.
+- [ ] The record preserves platform, language, provider/model/promptVersion, confidence/rationale, tone profile snapshot, revision count, optional last edit reason, latest response evaluation snapshot when present, and derived analysis labels when present.
+- [ ] The record contains no comment author data, no external comment/reply identifiers, no comment text, and no foreign keys to comment-scoped tables; privacy classification does not call the record anonymous.
 - [ ] Records persist after the source comment and its workflow events expire under the 30-day retention.
 - [ ] Repeated processing of the same reply attempt produces a single record.
 - [ ] A failure writing the record does not change the send outcome and leaves an observable error.
@@ -67,4 +67,4 @@ Pair capture happens after the successful reply result is recorded and is best-e
 
 ## 6. Privacy Notes
 
-The dataset deliberately retains creator-authored and AI-generated text beyond the 30-day comment retention. Because it excludes comment text, commenter identity, and platform identifiers, it does not extend retention of audience personal data. The privacy policy wording should be reviewed to disclose this anonymized refinement dataset before launch.
+The dataset deliberately retains creator-authored and AI-generated text beyond the 30-day comment retention. A response can repeat names or other details from the source comment, so excluding the comment body and external identifiers does not guarantee that audience personal data is absent. Define retention/removal policy and disclose the de-identified response-text dataset in the privacy policy before launch.

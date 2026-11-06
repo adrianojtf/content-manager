@@ -78,7 +78,6 @@ test('episode approval and decisions map domain outcomes to stable HTTP results'
         seriesId: 'series-1',
         seasonNumber: null,
         episodeNumber: 8,
-        episodeCode: 'FQA-E08',
       }),
     });
     const decision = await fetch(`${baseUrl}/analytics/episodes/review/decision`, {
@@ -144,12 +143,11 @@ test('episode review endpoint hides unexpected provider errors and maps stable r
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      suggestionIds: ['suggestion-1'],
-      seriesId: 'series-1',
-      seasonNumber: null,
-      episodeNumber: 8,
-      episodeCode: 'FQA-E08',
-    }),
+        suggestionIds: ['suggestion-1'],
+        seriesId: 'series-1',
+        seasonNumber: null,
+        episodeNumber: 8,
+      }),
   }));
   assert.equal(conflict.status, 409);
   assert.deepEqual(await conflict.json(), { code: 'ANALYTICS_EPISODE_IDENTITY_CONFLICT' });

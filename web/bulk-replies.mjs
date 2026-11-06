@@ -25,6 +25,8 @@ export async function loadSemiAutomaticReplyComments(api, accountId, publication
   };
 }
 
+export const defaultSemiAutomaticConcurrency = 6;
+
 export async function generateSemiAutomaticReplies(api, {
   accountId,
   comments,
@@ -32,22 +34,23 @@ export async function generateSemiAutomaticReplies(api, {
   toneProfileForComment,
   languageForComment,
   onProgress = () => {},
+  concurrency = defaultSemiAutomaticConcurrency,
+  eventsForComment = null,
 }) {
-  const rows = [];
+  const rows = comments.map((comment) => ({
+    comment,
+    status: 'pending',
+    language: languageForComment?.(comment) ?? 'pt-BR',
+    toneProfile: copyToneProfile(toneProfileForComment?.(comment) ?? toneProfile),
+    events: [],
+    failures: [],
+    errorCode: null,
+    approved: false,
+  }));
 
-  for (const [index, comment] of comments.entries()) {
-    const row = {
-      comment,
-      status: 'pending',
-      language: languageForComment?.(comment) ?? 'pt-BR',
-      toneProfile: copyToneProfile(toneProfileForComment?.(comment) ?? toneProfile),
-      events: [],
-      failures: [],
-      errorCode: null,
-      approved: false,
-    };
-    rows.push(row);
-
+  const processRow = async (index) => {
+    const comment = comments[index];
+    const row = rows[index];
     const report = (phase) => onProgress({
       commentId: comment.externalCommentId,
       index: index + 1,
@@ -59,20 +62,18 @@ export async function generateSemiAutomaticReplies(api, {
 
     try {
       report('loading-history');
-      row.events = await api.getWorkflow(accountId, comment.externalCommentId);
+      const cachedEvents = eventsForComment?.(comment);
+      row.events = Array.isArray(cachedEvents) && cachedEvents.length
+        ? cachedEvents
+        : await api.getWorkflow(accountId, comment.externalCommentId);
       let analysisEvent = latestSuccessfulAnalysis(row.events);
 
       if (!analysisEvent) {
         row.status = 'evaluating';
         report('evaluating');
         const createdAnalysis = await api.classify(accountId, comment.externalCommentId);
-        try {
-          row.events = await api.getWorkflow(accountId, comment.externalCommentId);
-          row.historyWarning = false;
-        } catch {
-          row.events = mergeEvents(row.events, [createdAnalysis]);
-          row.historyWarning = true;
-        }
+        row.events = mergeEvents(row.events, [createdAnalysis]);
+        row.historyWarning = false;
         analysisEvent = latestSuccessfulAnalysis(row.events);
         analysisEvent ??= createdAnalysis?.eventType === 'COMMENT_ANALYSIS_CREATED' ? createdAnalysis : null;
         if (!analysisEvent) {
@@ -88,13 +89,8 @@ export async function generateSemiAutomaticReplies(api, {
         ...(toneOverride ? { toneOverride } : {}),
       });
       row.failures = generation.failures ?? [];
-      try {
-        row.events = await api.getWorkflow(accountId, comment.externalCommentId);
-        row.historyWarning = false;
-      } catch {
-        row.events = mergeEvents(row.events, generation.variants ?? []);
-        row.historyWarning = true;
-      }
+      row.events = mergeEvents(row.events, generation.variants ?? []);
+      row.historyWarning = false;
       row.errorCode = row.failures[0]?.errorCode ?? null;
       row.status = row.failures.length > 0 ? 'partial' : 'ready';
       if (!generation.variants?.length) {
@@ -112,7 +108,17 @@ export async function generateSemiAutomaticReplies(api, {
     }
 
     report('completed');
-  }
+  };
+
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(Math.floor(concurrency) || defaultSemiAutomaticConcurrency, rows.length));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < rows.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      await processRow(index);
+    }
+  }));
 
   return rows;
 }

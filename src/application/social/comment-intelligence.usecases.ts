@@ -26,6 +26,7 @@ import {
   type ResolvedVerifiedReleaseSchedule,
 } from './verified-release-schedule';
 import { VerifiedReleaseScheduleError } from './verified-release-schedule-error';
+import { runWithConcurrency } from '../run-with-concurrency';
 
 export interface EvaluateCommentInput {
   readonly accountId: string;
@@ -226,10 +227,8 @@ export class GenerateCommentResponseSuggestion {
       : resolvedTone.profile;
     const usedToneProfileSource: ResponseToneProfileSource = resolvedTone.source;
 
-    const variants: CommentWorkflowEvent[] = [];
-    const failures: { language: string; errorCode: string }[] = [];
-    let lastError: unknown = null;
-    for (const language of generatedResponseLanguages) {
+    type LanguageOutcome = { readonly variant: CommentWorkflowEvent } | { readonly failure: { language: string; errorCode: string }; error: unknown };
+    const outcomes = await runWithConcurrency(generatedResponseLanguages, generatedResponseLanguages.length, async (language): Promise<LanguageOutcome> => {
       try {
         const suggestion = await this.generator.generate({
           comment,
@@ -241,20 +240,20 @@ export class GenerateCommentResponseSuggestion {
         if (suggestion.language !== language) {
           throw new CommentWorkflowAuditError('RESPONSE_SUGGESTION_INVALID');
         }
-        variants.push(await this.recordSuggestion.execute({
-          accountId: account.id,
-          externalCommentId: comment.externalCommentId,
-          sourceAnalysisEventId: analysisEvent.id,
-          suggestion,
-          toneProfile: usedToneProfile,
-          toneProfileSource: usedToneProfileSource,
-          verifiedReleaseScheduleSnapshot: verifiedReleaseScheduleSnapshot(resolvedSchedule),
-          batchOperationId: input.batchOperationId,
-        }));
+        return {
+          variant: await this.recordSuggestion.execute({
+            accountId: account.id,
+            externalCommentId: comment.externalCommentId,
+            sourceAnalysisEventId: analysisEvent.id,
+            suggestion,
+            toneProfile: usedToneProfile,
+            toneProfileSource: usedToneProfileSource,
+            verifiedReleaseScheduleSnapshot: verifiedReleaseScheduleSnapshot(resolvedSchedule),
+            batchOperationId: input.batchOperationId,
+          }),
+        };
       } catch (error) {
         const errorCode = this.suggestionErrorCode(error);
-        failures.push({ language, errorCode });
-        lastError = error;
         await this.recordSuggestionFailure(
           tenantId,
           account.id,
@@ -268,6 +267,18 @@ export class GenerateCommentResponseSuggestion {
           errorCode,
           verifiedReleaseScheduleSnapshot(resolvedSchedule),
         );
+        return { failure: { language, errorCode }, error };
+      }
+    });
+    const variants: CommentWorkflowEvent[] = [];
+    const failures: { language: string; errorCode: string }[] = [];
+    let lastError: unknown = null;
+    for (const outcome of outcomes) {
+      if ('variant' in outcome) {
+        variants.push(outcome.variant);
+      } else {
+        failures.push(outcome.failure);
+        lastError = outcome.error;
       }
     }
     if (variants.length === 0 && lastError) throw lastError;

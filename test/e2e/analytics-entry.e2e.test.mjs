@@ -27,6 +27,23 @@ function useCases(overrides = {}) {
     createSeries: record('createSeries', { id: 'series-1' }),
     createEpisode: record('createEpisode', { id: 'episode-1' }),
     createManualEpisode: record('createManualEpisode', { episode: { id: 'episode-1' }, linkedPublicationCount: 2 }),
+    listSeriesEpisodes: record('listSeriesEpisodes', [{
+      id: 'episode-1',
+      seriesId: 'series-1',
+      seasonNumber: 2,
+      episodeNumber: 8,
+      episodeCode: 'FQA-S02-E08',
+      publications: [{
+        platform: 'youtube',
+        socialAccountName: 'FQA Oficial',
+        externalPublicationId: 'video-8',
+        title: 'FQA capítulo 8',
+        description: 'A equipe encontra uma pista.',
+        permalink: 'https://video.example/fqa-8',
+        thumbnailUrl: 'https://media.example/fqa-8.jpg',
+        publishedAt: '2026-10-10T12:00:00.000Z',
+      }],
+    }]),
     listAvailableEpisodePublications: record('listAvailableEpisodePublications', [{
       platform: 'instagram',
       socialAccountId: 'account-1',
@@ -34,13 +51,37 @@ function useCases(overrides = {}) {
       title: 'FQA-E08',
       thumbnailUrl: 'https://media.example/post-1.jpg',
     }]),
+    updateEpisode: record('updateEpisode', { id: 'episode-1', episodeCode: 'FQA-S03-E12' }),
+    updateEpisodePublication: record('updateEpisodePublication', { replaced: true }),
     updateEconomics: record('updateEconomics', { id: 'episode-1', productionCost: null, productionTimeSeconds: null }),
     upsertObservation: record('upsertObservation', { id: 'observation-1' }),
     upsertSnapshot: record('upsertSnapshot', { totalFollowers: 15000 }),
     upsertRevenue: record('upsertRevenue', { month: '2026-10-01' }),
+    dashboard: record('dashboard', {
+      generatedAt: '2026-10-15T12:00:00.000Z',
+      reportingTimezone: 'UTC',
+      seriesCount: 1,
+      episodeCount: 2,
+    }),
     ...overrides,
   };
 }
+
+test('dashboard endpoint returns the reporting use case result without accepting tenant input', async () => {
+  const fixture = useCases();
+  const response = await requestWithUseCases(fixture, (baseUrl) => (
+    send(baseUrl, 'GET', '/analytics/dashboard?tenantId=another-tenant')
+  ));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    generatedAt: '2026-10-15T12:00:00.000Z',
+    reportingTimezone: 'UTC',
+    seriesCount: 1,
+    episodeCount: 2,
+  });
+  assert.deepEqual(fixture.calls, [['dashboard', undefined]]);
+});
 
 async function send(baseUrl, method, path, body) {
   return fetch(`${baseUrl}${path}`, {
@@ -49,6 +90,33 @@ async function send(baseUrl, method, path, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
+
+test('Series detail endpoint returns tenant-scoped episodes through the application use case', async () => {
+  const fixture = useCases();
+  const response = await requestWithUseCases(fixture, (baseUrl) => (
+    send(baseUrl, 'GET', '/analytics/series/5b7f1f84-25a8-4bd8-a7df-680dc4400010/episodes')
+  ));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), [{
+    id: 'episode-1',
+    seriesId: 'series-1',
+    seasonNumber: 2,
+    episodeNumber: 8,
+    episodeCode: 'FQA-S02-E08',
+    publications: [{
+      platform: 'youtube',
+      socialAccountName: 'FQA Oficial',
+      externalPublicationId: 'video-8',
+      title: 'FQA capítulo 8',
+      description: 'A equipe encontra uma pista.',
+      permalink: 'https://video.example/fqa-8',
+      thumbnailUrl: 'https://media.example/fqa-8.jpg',
+      publishedAt: '2026-10-10T12:00:00.000Z',
+    }],
+  }]);
+  assert.deepEqual(fixture.calls, [['listSeriesEpisodes', '5b7f1f84-25a8-4bd8-a7df-680dc4400010']]);
+});
 
 test('manual analytics entry endpoints accept whitelisted bodies and never trust tenant or actor fields', async () => {
   const fixture = useCases();
@@ -60,9 +128,26 @@ test('manual analytics entry endpoints accept whitelisted bodies and never trust
       seriesId: '5b7f1f84-25a8-4bd8-a7df-680dc4400010',
       seasonNumber: 2,
       episodeNumber: 8,
-      episodeCode: 'FQA-S02-E08',
       productionCost: { amount: '1200.50', currency: 'BRL' },
       productionTimeSeconds: 3600,
+    });
+    const corrected = await send(baseUrl, 'PUT', '/analytics/episodes/5b7f1f84-25a8-4bd8-a7df-680dc4400020', {
+      seriesId: '5b7f1f84-25a8-4bd8-a7df-680dc4400010',
+      seasonNumber: 3,
+      episodeNumber: 12,
+      episodeCode: 'FQA-S03-E12',
+      productionCost: { amount: '900.00', currency: 'BRL' },
+      productionTimeSeconds: 1800,
+    });
+    const publication = await send(baseUrl, 'PUT', '/analytics/episodes/5b7f1f84-25a8-4bd8-a7df-680dc4400020/publications', {
+      socialAccountId: '5b7f1f84-25a8-4bd8-a7df-680dc4400001',
+      externalPublicationId: 'external-1',
+      next: { socialAccountId: '5b7f1f84-25a8-4bd8-a7df-680dc4400001', externalPublicationId: 'external-2' },
+    });
+    const movedPublication = await send(baseUrl, 'PUT', '/analytics/episodes/5b7f1f84-25a8-4bd8-a7df-680dc4400020/publications', {
+      socialAccountId: '5b7f1f84-25a8-4bd8-a7df-680dc4400001',
+      externalPublicationId: 'external-1',
+      moveTo: { seasonNumber: 1, episodeNumber: 7 },
     });
     const economics = await send(baseUrl, 'PUT', '/analytics/episodes/5b7f1f84-25a8-4bd8-a7df-680dc4400020/economics', {
       productionCost: null,
@@ -88,19 +173,25 @@ test('manual analytics entry endpoints accept whitelisted bodies and never trust
       month: '2026-10',
       amount: { amount: '3050.75', currency: 'BRL' },
     });
-    return { series, episode, economics, observation, snapshot, revenue };
+    return { series, episode, corrected, publication, movedPublication, economics, observation, snapshot, revenue };
   });
 
   assert.equal(result.series.status, 201);
   assert.deepEqual(await result.series.json(), { id: 'series-1' });
   assert.equal(result.episode.status, 201);
+  assert.equal(result.corrected.status, 200);
+  assert.equal(result.publication.status, 200);
+  assert.equal(result.movedPublication.status, 200);
   assert.equal(result.economics.status, 200);
   assert.equal(result.observation.status, 200);
   assert.equal(result.snapshot.status, 200);
   assert.equal(result.revenue.status, 200);
   assert.deepEqual(fixture.calls.map(([name]) => name), [
-    'createSeries', 'createEpisode', 'updateEconomics', 'upsertObservation', 'upsertSnapshot', 'upsertRevenue',
+    'createSeries', 'createEpisode', 'updateEpisode', 'updateEpisodePublication', 'updateEpisodePublication', 'updateEconomics', 'upsertObservation', 'upsertSnapshot', 'upsertRevenue',
   ]);
+  const [, correctionInput] = fixture.calls.find(([name]) => name === 'updateEpisode');
+  assert.equal(correctionInput.episodeId, '5b7f1f84-25a8-4bd8-a7df-680dc4400020');
+  assert.equal(correctionInput.episodeNumber, 12);
   const [, economicsInput] = fixture.calls.find(([name]) => name === 'updateEconomics');
   assert.equal(economicsInput.episodeId, '5b7f1f84-25a8-4bd8-a7df-680dc4400020');
 });
@@ -133,6 +224,15 @@ test('analytics entry endpoints reject extra, tenant, or actor fields before rea
       platform: 'tiktok', month: '2026-10', amount: { amount: '10.00', currency: 'BRL' }, actor: 'forged',
     }),
     send(baseUrl, 'PUT', '/analytics/episodes/5b7f1f84-25a8-4bd8-a7df-680dc4400020/economics', { productionCost: '100' }),
+    send(baseUrl, 'PUT', '/analytics/episodes/5b7f1f84-25a8-4bd8-a7df-680dc4400020', {
+      seriesId: '5b7f1f84-25a8-4bd8-a7df-680dc4400010', seasonNumber: 1, episodeNumber: 1,
+      episodeCode: 'FQA-S01-E01', tenantId: 'forged',
+    }),
+    send(baseUrl, 'PUT', '/analytics/episodes/5b7f1f84-25a8-4bd8-a7df-680dc4400020/publications', {
+      socialAccountId: '5b7f1f84-25a8-4bd8-a7df-680dc4400001',
+      externalPublicationId: 'external-1',
+      next: { socialAccountId: '5b7f1f84-25a8-4bd8-a7df-680dc4400001', externalPublicationId: 'external-2', tenantId: 'forged' },
+    }),
   ]));
 
   for (const response of responses) {
@@ -150,7 +250,6 @@ test('manual episode endpoints list local publications and atomically accept sel
       seriesId: 'series-1',
       seasonNumber: 2,
       episodeNumber: 8,
-      episodeCode: 'FQA-S02-E08',
       productionCost: null,
       productionTimeSeconds: null,
       publicationSelections: [

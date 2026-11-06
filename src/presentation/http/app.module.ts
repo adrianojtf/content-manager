@@ -21,6 +21,7 @@ import { SocialAccountsController } from './social-accounts.controller';
 import { AIProviderAccessSettingsController } from './ai-provider-access-settings.controller';
 import { EpisodeReviewController } from './episode-review.controller';
 import { AnalyticsEntryController } from './analytics-entry.controller';
+import { ResponseRefinementAnalysisController } from './response-refinement-analysis.controller';
 
 @Module({})
 export class AppModule {
@@ -28,7 +29,7 @@ export class AppModule {
     return {
       module: AppModule,
       imports: [PostgresPersistenceModule.register(config)],
-      controllers: [SocialPublicationsController, SocialAccountsController, YouTubeOAuthConnectionController, InstagramOAuthConnectionController, FacebookOAuthConnectionController, TikTokBusinessOAuthConnectionController, SocialCommentsController, SocialCommentSummaryController, SentRepliesReportController, CommentWorkflowAuditController, CommentIntelligenceController, ResponseGenerationSettingsController, AIProviderAccessSettingsController, ResponseToneSettingsController, TenantResponseToneSettingsController, VerifiedReleaseScheduleController, TenantVerifiedReleaseScheduleController, CommentWorkflowBatchController, EpisodeReviewController, AnalyticsEntryController],
+      controllers: [SocialPublicationsController, SocialAccountsController, YouTubeOAuthConnectionController, InstagramOAuthConnectionController, FacebookOAuthConnectionController, TikTokBusinessOAuthConnectionController, SocialCommentsController, SocialCommentSummaryController, SentRepliesReportController, CommentWorkflowAuditController, CommentIntelligenceController, ResponseGenerationSettingsController, AIProviderAccessSettingsController, ResponseToneSettingsController, TenantResponseToneSettingsController, VerifiedReleaseScheduleController, TenantVerifiedReleaseScheduleController, CommentWorkflowBatchController, EpisodeReviewController, AnalyticsEntryController, ResponseRefinementAnalysisController],
     };
   }
 }

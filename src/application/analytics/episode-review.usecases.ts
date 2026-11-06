@@ -62,9 +62,10 @@ export class RefreshEpisodeSuggestions {
     }[];
   }> {
     const tenantId = await this.tenant.resolveTenantId();
-    const [accounts, sourceStates] = await Promise.all([
+    const [accounts, sourceStates, seriesCatalog] = await Promise.all([
       this.accounts.listByTenant(tenantId),
       this.reviews.listSourceStates(tenantId),
+      this.reviews.listSeriesCatalog(tenantId),
     ]);
     const stateBySource = new Map(sourceStates.map((source) => [
       this.sourceKey(source.socialAccountId, source.externalPublicationId),
@@ -99,6 +100,7 @@ export class RefreshEpisodeSuggestions {
 
         try {
           const suggestion = await this.classifyPublication.execute({
+            seriesCatalog,
             publication: {
               platform: publication.platform,
               externalPublicationId: publication.externalPublicationId,
@@ -165,6 +167,9 @@ export class GetEpisodeReview {
       this.reviews.listSeries(tenantId),
     ]);
     const suggestions = storedSuggestions.map((suggestion) => {
+      if (suggestion.identitySource === 'JEV_EXTRACTED' || suggestion.identitySource === 'LEARNED_PATTERN') {
+        return suggestion;
+      }
       const currentIdentity = extractExplicitEpisodeIdentity(
         suggestion.publication.title,
         suggestion.publication.description,
@@ -390,7 +395,7 @@ export interface ApproveEpisodeSuggestionGroupInput {
   };
   readonly seasonNumber: number | null;
   readonly episodeNumber: number;
-  readonly episodeCode: string;
+  readonly episodeCode?: string;
 }
 
 export class ApproveEpisodeSuggestionGroup {
@@ -404,8 +409,9 @@ export class ApproveEpisodeSuggestionGroup {
     const tenantId = await this.tenant.resolveTenantId();
     const suggestionIds = this.validSuggestionIds(input.suggestionIds);
     const series = await this.resolveSeries(tenantId, input);
-    const episodeCode = input.episodeCode?.trim();
-    if (!episodeCode || episodeCode.length > 100
+    const episodeCode = typeof input.episodeCode === 'string' ? input.episodeCode.trim() : null;
+    if ((input.episodeCode !== undefined && typeof input.episodeCode !== 'string')
+      || (episodeCode !== null && episodeCode.length > 100)
       || !Number.isSafeInteger(input.episodeNumber) || input.episodeNumber < 1
       || (series.seasonMode === 'SEASONAL'
         && (!Number.isSafeInteger(input.seasonNumber) || (input.seasonNumber as number) < 1))
@@ -418,7 +424,7 @@ export class ApproveEpisodeSuggestionGroup {
       series,
       seasonNumber: input.seasonNumber,
       episodeNumber: input.episodeNumber,
-      episodeCode,
+      episodeCode: episodeCode || null,
       actorId: reviewActorId,
       decidedAt: new Date(this.now()).toISOString(),
     };

@@ -352,6 +352,7 @@ export class RecordResponseSuggestion {
       parentEventId: sourceAnalysis?.id ?? null,
       payload: {
         ...input.suggestion,
+        promptVersion: input.suggestion.promptVersion?.trim() || 'UNKNOWN',
         toneProfile,
         ...(input.toneProfileSource !== undefined ? { toneProfileSource: input.toneProfileSource } : {}),
         verifiedReleaseScheduleSnapshot: input.verifiedReleaseScheduleSnapshot ?? null,
@@ -367,6 +368,8 @@ export class RecordResponseSuggestion {
       || typeof suggestion.intendedTone !== 'string' || !suggestion.intendedTone.trim()
       || typeof suggestion.provider !== 'string' || !suggestion.provider.trim()
       || typeof suggestion.model !== 'string' || !suggestion.model.trim()
+      || (suggestion.promptVersion !== undefined
+        && (typeof suggestion.promptVersion !== 'string' || !suggestion.promptVersion.trim()))
       || !Number.isFinite(suggestion.confidence) || suggestion.confidence < 0 || suggestion.confidence > 1
       || (suggestion.rationale !== null && typeof suggestion.rationale !== 'string')) {
       throw new CommentWorkflowAuditError('RESPONSE_SUGGESTION_INVALID');

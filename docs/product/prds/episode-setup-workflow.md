@@ -68,9 +68,15 @@ If a group is partially approved, only selected publications are linked; unselec
 
 Hide series proposals without an identified name and unmatched episode candidates by default. Show a localized, accessible reveal control with a candidate count so the creator can opt in to reviewing and assigning them. Hiding is a presentation-only choice: it must not reject, defer, delete, or omit candidates from synchronization/persistence.
 
-### ESW-09 — Resolve the Obsidiana named season
+Keep the creator's Series catalog and manual Episode entry available on the Episodes screen independently of AI recommendations. Recommendations remain available in a secondary panel that starts collapsed; opening or closing it does not change any suggestion or setup decision.
 
-Interpret the explicit arc title `Obsidiana: O Legado` (including the `#ObsidianaOLegado` tag) as the canonical series `Obsidiana` with a suggested season number of `2`. `O Legado` is not a separate Series. A plain `Obsidiana` title identifies the Series but does not imply a season unless the publication explicitly says `1ª temporada`. The creator still confirms the seasonal mode and proposed season in the normal setup steps.
+Present Series in a paginated list. Selecting a Series opens a dedicated detail view with a back action and an unpaginated list of its saved Episodes as cards. Each card shows the season and episode number plus identifying details from every linked publication, including platform/account, title, full description, and publication date where available. A "suggest episodes" action opens a modal with all unassigned pending episode suggestions, without pagination; the creator selects the correct candidates and adds them to the Series. This assignment only confirms the suggested Series mapping; season confirmation and explicit episode approval are still required before canonical Episodes or publication links are created.
+
+Show mapped suggestions separately from saved Episodes in the Series detail view with source descriptions and identifying metadata. Group these suggestions by social platform and order each platform's publications by date, oldest first. Extract explicit episode numbers from publication titles/descriptions during evaluation. If the number is unavailable after extraction, let the creator enter it on the candidate before selecting it. Keep candidates with unresolved season unselectable, and keep the selection count/add button pinned to the bottom while scrolling. Generate any canonical episode code internally. Adding selected candidates is explicit episode approval.
+
+### ESW-09 — Resolve named seasons without hard-coded series rules
+
+Named arcs (e.g. `Obsidiana: O Legado`) are not resolved by deterministic, series-specific rules. They surface as regular suggestions and are mapped to a canonical series through the episode identity cascade — JEV extraction against the tenant series catalog — or through creator-confirmed series aliases. An arc title never implies a season number or a separate Series by itself; the creator still confirms the series mapping, seasonal mode, and season in the normal setup steps.
 
 ## 6. Acceptance Criteria
 
@@ -79,13 +85,16 @@ Interpret the explicit arc title `Obsidiana: O Legado` (including the `#Obsidian
 - [ ] Unchanged imports are idempotent; changed source metadata creates a reviewable revision while prior decisions remain auditable.
 - [ ] Series require creator confirmation of canonical name and season mode; similar names are not automatically merged.
 - [ ] Seasonal candidates require a confirmed positive season number before episode review; non-seasonal candidates carry no season number; unknown seasons remain unresolved.
+- [ ] Episode numbers are extracted from explicit title/description markers during evaluation; creators confirm/add by episode number without entering an episode code.
 - [ ] The next step loads automatically when the current step has no unresolved items; reload preserves completed decisions and current progress.
 - [ ] Episode groups are prefilled from confirmed context, remain editable, and require explicit creator approval before canonical episodes/publication links are written.
 - [ ] Publications from different social networks with the same confirmed series, season, and episode number appear together in one episode card carousel, independent of platform/account. The carousel exposes each publication's provenance and supports accessible previous/next navigation.
 - [ ] Approving a cross-network group creates at most one canonical Episode and links only selected source publications, preserving each platform, account, and external publication ID. Excluded sources remain pending; a later approval links them to the existing Episode rather than creating a duplicate.
 - [ ] Conflicting series/season/episode identity or incompatible episode codes are not silently grouped; the creator must resolve the conflict before approval.
 - [ ] Unidentified series proposals and unmatched episode candidates are hidden by default behind accessible, localized reveal controls with accurate counts; revealing them allows normal assignment/review without changing their persisted decision state.
-- [ ] `Obsidiana: O Legado` and its explicit hashtag resolve to Series `Obsidiana`, season 2; the root name is not treated as a season or a separate series, and the creator confirms the suggestion before episode approval.
+- [ ] Creator-created series remain listed on the Episodes screen, manual episode entry is available at every recommendation stage, and recommendations start collapsed without affecting their persisted state.
+- [ ] Series use a paginated list; selecting one opens a detail view with a back action and all its saved Episodes, while the suggestion modal shows all candidates without pagination and only maps creator-selected suggestions to the Series.
+- [ ] Named arcs resolve without series-specific deterministic rules: `Obsidiana: O Legado` can be mapped to Series `Obsidiana` via the JEV catalog extraction or a creator-confirmed alias, and the creator confirms the mapping and season before episode approval.
 - [ ] A conflict or failed item does not block confirmation of independent items; errors are visible with retry or defer actions.
 - [ ] All new interface copy has semantic catalog entries in `pt-BR`, `en-US`, and `es-ES`; loading, empty, partial-failure, and error states work with light and dark themes.
 

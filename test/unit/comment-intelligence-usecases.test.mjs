@@ -158,6 +158,26 @@ test('GenerateCommentResponseSuggestion keeps successful language variants when 
   assert.equal(failedEvent.payload.language, 'en-US');
 });
 
+test('GenerateCommentResponseSuggestion invokes the generator for all languages concurrently', async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const useCases = createUseCases({
+    events: [{ id: 'analysis-1', eventType: 'COMMENT_ANALYSIS_CREATED', payload: analysis }],
+    suggestion: async (input) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return { ...generatedSuggestion, language: input.language };
+    },
+  });
+
+  const result = await useCases.generateResponse.execute({ accountId, externalCommentId: comment.externalCommentId });
+
+  assert.equal(peak, 3);
+  assert.deepEqual(result.variants.map((event) => event.payload.language), ['pt-BR', 'en-US', 'es-ES']);
+});
+
 test('GenerateCommentResponseSuggestion uses the connected account tone profile and snapshots it in audit data', async () => {
   const toneProfile = { primaryTone: 'EMPATHETIC', modifiers: ['CONCISE', 'WARM'], customNote: 'Avoid slang.' };
   const useCases = createUseCases({ toneProfile, events: [{ id: 'analysis-1', eventType: 'COMMENT_ANALYSIS_CREATED', payload: analysis }] });

@@ -76,7 +76,7 @@ function seed({ editedText } = {}) {
   return events;
 }
 
-test('edit then save then send an AI suggestion records exactly one anonymized refinement pair', async () => {
+test('edit then save then send an AI suggestion records exactly one de-identified refinement pair', async () => {
   const { pairs, revisions, sendReply, history } = setup({ seedEvents: seed(), attemptId: '60000000-0000-4000-8000-000000000011' });
 
   await withApp({ corrections: { execute: async () => ({}) }, revisions, sendReply, history }, async (baseUrl) => {

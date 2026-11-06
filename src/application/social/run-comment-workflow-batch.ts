@@ -11,6 +11,7 @@ import { ListSocialPublications } from './list-social-publications';
 import { SyncPublicationComments } from './sync-publication-comments';
 import { IntelligenceProviderError } from './intelligence-provider-error';
 import { SocialProviderError } from './social-provider-error';
+import { runWithConcurrency } from '../run-with-concurrency';
 
 export type CommentWorkflowBatchOperation = 'sync' | 'classify' | 'generate';
 export type CommentWorkflowBatchScope = 'comment' | 'publication' | 'account' | 'platform';
@@ -49,6 +50,17 @@ export interface CommentWorkflowBatchResult {
 }
 
 const maximumProviderPages = 1000;
+export const defaultCommentWorkflowConcurrency = 8;
+const maximumItemConcurrency = 32;
+const rateLimitRetryDelays = [1000, 2000, 4000] as const;
+
+export function parseCommentWorkflowConcurrency(value: unknown): number {
+  const parsed = typeof value === 'string' ? Number(value) : value;
+  if (typeof parsed !== 'number' || !Number.isSafeInteger(parsed) || parsed < 1) {
+    return defaultCommentWorkflowConcurrency;
+  }
+  return Math.min(parsed, maximumItemConcurrency);
+}
 
 export class RunCommentWorkflowBatch {
   constructor(
@@ -61,6 +73,8 @@ export class RunCommentWorkflowBatch {
     private readonly tenant: PilotTenantContext,
     private readonly batchIds: BatchOperationIdGenerator,
     private readonly now: () => number = Date.now,
+    private readonly concurrency: number = defaultCommentWorkflowConcurrency,
+    private readonly sleep: (milliseconds: number) => Promise<void> = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   ) {}
 
   async execute(input: RunCommentWorkflowBatchInput): Promise<CommentWorkflowBatchResult> {
@@ -131,56 +145,69 @@ export class RunCommentWorkflowBatch {
       comments = [];
     }
 
-    const results: CommentWorkflowBatchItem[] = [];
-    for (const comment of comments) {
+    return runWithConcurrency(comments, this.concurrency, async (comment): Promise<CommentWorkflowBatchItem> => {
       const commentAccountId = comment.socialAccountId;
       try {
         if (input.operation === 'classify') {
-          const artifact = await this.evaluateComment.execute({
+          const artifact = await this.withRateLimitRetry(() => this.evaluateComment.execute({
             accountId: commentAccountId,
             externalCommentId: comment.externalCommentId,
             batchOperationId,
-          });
-          results.push({
+          }));
+          return {
             accountId: commentAccountId,
             platform: comment.platform,
             publicationId: comment.externalPublicationId,
             externalCommentId: comment.externalCommentId,
             status: 'SUCCEEDED',
             artifactId: artifact.id,
-          });
-        } else {
-          const generated = await this.generateSuggestion.execute({
-            accountId: commentAccountId,
-            externalCommentId: comment.externalCommentId,
-            batchOperationId,
-          });
-          const artifactIds = generated.variants.map((variant) => variant.id);
-          results.push({
-            accountId: commentAccountId,
-            platform: comment.platform,
-            publicationId: comment.externalPublicationId,
-            externalCommentId: comment.externalCommentId,
-            status: generated.failures.length > 0 ? 'PARTIAL' : 'SUCCEEDED',
-            ...(artifactIds[0] ? { artifactId: artifactIds[0] } : {}),
-            artifactIds,
-            ...(generated.failures.length > 0
-              ? { failedLanguages: generated.failures.map((failure) => failure.language), errorCode: generated.failures[0].errorCode }
-              : {}),
-          });
+          };
         }
+        const generated = await this.withRateLimitRetry(() => this.generateSuggestion.execute({
+          accountId: commentAccountId,
+          externalCommentId: comment.externalCommentId,
+          batchOperationId,
+        }));
+        const artifactIds = generated.variants.map((variant) => variant.id);
+        return {
+          accountId: commentAccountId,
+          platform: comment.platform,
+          publicationId: comment.externalPublicationId,
+          externalCommentId: comment.externalCommentId,
+          status: generated.failures.length > 0 ? 'PARTIAL' : 'SUCCEEDED',
+          ...(artifactIds[0] ? { artifactId: artifactIds[0] } : {}),
+          artifactIds,
+          ...(generated.failures.length > 0
+            ? { failedLanguages: generated.failures.map((failure) => failure.language), errorCode: generated.failures[0].errorCode }
+            : {}),
+        };
       } catch (error) {
-        results.push({
+        return {
           accountId: commentAccountId,
           platform: comment.platform,
           publicationId: comment.externalPublicationId,
           externalCommentId: comment.externalCommentId,
           status: this.isUnsupported(error) ? 'UNSUPPORTED' : 'FAILED',
           errorCode: this.errorCode(error),
-        });
+        };
+      }
+    });
+  }
+
+  private async withRateLimitRetry<T>(operation: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        const delay = rateLimitRetryDelays[attempt];
+        if (!(error instanceof IntelligenceProviderError)
+          || error.code !== 'INTELLIGENCE_PROVIDER_RATE_LIMITED'
+          || delay === undefined) {
+          throw error;
+        }
+        await this.sleep(delay);
       }
     }
-    return results;
   }
 
   private async syncScope(tenantId: string, input: RunCommentWorkflowBatchInput, batchOperationId: string): Promise<CommentWorkflowBatchItem[]> {

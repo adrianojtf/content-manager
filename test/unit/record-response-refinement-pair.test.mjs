@@ -36,6 +36,7 @@ const correctionEvent = {
 };
 const suggestionPayload = {
   language: 'pt-BR', text: 'Texto gerado pela IA.', provider: 'GEMINI', model: 'gemini-3.5-flash-lite',
+  promptVersion: 'gemini-response-v1',
   confidence: 0.82, rationale: 'Responde a pergunta.', intendedTone: 'FRIENDLY',
   toneProfile: { primaryTone: 'FRIENDLY', modifiers: ['WARM'], customNote: null }, toneProfileSource: 'ACCOUNT',
 };
@@ -101,6 +102,7 @@ test('RecordResponseRefinementPair maps the edited lineage, corrected analysis l
     finalText: 'Texto final editado.',
     aiProvider: 'GEMINI',
     aiModel: 'gemini-3.5-flash-lite',
+    promptVersion: 'gemini-response-v1',
     aiConfidence: 0.82,
     aiRationale: 'Responde a pergunta.',
     intendedTone: 'FRIENDLY',

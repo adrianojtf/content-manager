@@ -73,6 +73,8 @@ function suggestion(index, overrides = {}) {
       episodeNumber: 8,
       episodeCode: 'FQA-S02-E08',
     },
+    identitySource: 'RULES',
+    identityAudit: { catalogSize: 0 },
     rationaleVariants: {
       'pt-BR': 'Possível episódio.',
       'en-US': 'Possible episode.',
@@ -119,6 +121,7 @@ async function createRepository() {
     '017_create_social_publications_and_comment_replies.sql',
     '023_create_episode_review.sql',
     '025_create_episode_setup_decisions.sql',
+    '026_add_episode_suggestion_identity_source.sql',
   ]) {
     await pool.query(await readFile(path.join(migrationDirectory, migration), 'utf8'));
   }
@@ -301,7 +304,7 @@ test('episode approval atomically creates a tenant Series/Episode and links only
       series: { id: series.id },
       seasonNumber: 2,
       episodeNumber: 8,
-      episodeCode: 'FQA-S02-E08',
+      episodeCode: null,
       actorId: 'LOCAL_PILOT_CREATOR',
       decidedAt: '2026-10-15T13:00:00.000Z',
     });
@@ -310,6 +313,7 @@ test('episode approval atomically creates a tenant Series/Episode and links only
     assert.equal(result.series.seasonMode, 'SEASONAL');
     assert.equal(result.episode.seasonNumber, 2);
     assert.equal(result.episode.episodeNumber, 8);
+    assert.equal(result.episode.episodeCode, `EP-${series.id.replace(/-/g, '').toUpperCase()}-S02-E08`);
     assert.equal(result.linkedPublicationCount, 2);
     const links = await pool.query(
       'SELECT social_account_id, external_publication_id FROM analytics_episode_publication_links WHERE tenant_id = $1 ORDER BY external_publication_id',
@@ -488,6 +492,151 @@ test('reject and defer decisions are auditable and never create canonical Series
       ['REJECTED', 'LOCAL_PILOT_CREATOR'],
       ['DEFERRED', 'LOCAL_PILOT_CREATOR'],
     ]);
+  } finally {
+    await pool.end();
+  }
+});
+
+test('identity provenance persists per suggestion and the series catalog exposes known seasons', async () => {
+  const { pool, repository } = await createRepository();
+  try {
+    await repository.saveSuggestion(tenantOne, suggestion(1, {
+      identitySource: 'JEV_EXTRACTED',
+      identity: {
+        seriesName: 'Model Series',
+        seasonNumber: 3,
+        seasonStatus: 'NUMBERED',
+        episodeNumber: 8,
+        episodeCode: 'FQA-S02-E08',
+      },
+      identityAudit: {
+        catalogSize: 1,
+        verification: { verdict: 'INVALID', confidence: 0.9, model: 'jev-test', usage: null },
+        extraction: {
+          seriesRef: { type: 'existing', seriesId: 'series-1' },
+          seasonNumber: 3,
+          episodeNumber: 8,
+          episodeCode: 'FQA-S02-E08',
+          confidence: 0.8,
+          model: 'jev-test',
+          usage: null,
+        },
+      },
+    }));
+    await repository.saveSuggestion(tenantOne, suggestion(3, { identitySource: null, identityAudit: null }));
+
+    const pending = await repository.listPendingSuggestions(tenantOne);
+    const extracted = pending.find((item) => item.publication.externalPublicationId === 'external-1');
+    const legacy = pending.find((item) => item.publication.externalPublicationId === 'external-3');
+    assert.equal(extracted.identitySource, 'JEV_EXTRACTED');
+    assert.equal(extracted.identity.seriesName, 'Model Series');
+    assert.equal(extracted.identityAudit.extraction.episodeNumber, 8);
+    assert.equal(legacy.identitySource, null);
+    assert.equal(legacy.identityAudit, null);
+
+    const series = await repository.confirmSetupSeries(
+      tenantOne,
+      pending.map((item) => item.id),
+      { name: 'FQA', aliases: ['Fiction Quest'], seasonMode: 'SEASONAL' },
+      'LOCAL_PILOT_CREATOR',
+      '2026-10-15T13:00:00.000Z',
+    );
+    await repository.confirmSetupSeason(tenantOne, pending.map((item) => item.id), 2, 'LOCAL_PILOT_CREATOR', '2026-10-15T13:05:00.000Z');
+    await repository.approveGroup(tenantOne, {
+      suggestionIds: pending.map((item) => item.id),
+      series: { id: series.id },
+      seasonNumber: 2,
+      episodeNumber: 8,
+      episodeCode: 'FQA-S02-E08',
+      actorId: 'LOCAL_PILOT_CREATOR',
+      decidedAt: '2026-10-15T13:10:00.000Z',
+    });
+
+    const catalog = await repository.listSeriesCatalog(tenantOne);
+    assert.deepEqual(catalog, [{
+      id: series.id,
+      name: 'FQA',
+      aliases: ['Fiction Quest'],
+      seasonMode: 'SEASONAL',
+      knownSeasonNumbers: [2],
+    }]);
+    assert.deepEqual(await repository.listSeriesCatalog(tenantTwo), []);
+  } finally {
+    await pool.end();
+  }
+});
+
+test('refresh → review flow persists a JEV-extracted identity end to end with a deterministic JEV stub', async () => {
+  const { pool, repository } = await createRepository();
+  try {
+    const { ClassifyImportedPublication: _unused, ...usecases } = require('../../dist/application/analytics/episode-review.usecases.js');
+    const { JsonLocalizationAdapter } = require('../../dist/infrastructure/localization/json-localization.adapter.js');
+    const calls = [];
+    const classifier = {
+      classify: async () => ({
+        classification: 'EPISODE',
+        confidence: 0.9,
+        probabilities: { EPISODE: 0.9, NOT_EPISODE: 0.05, UNCERTAIN: 0.05 },
+        evidence: null,
+        provider: 'JEV',
+        model: 'jev-stub',
+        schemaVersion: 'stub-v1',
+        usage: null,
+      }),
+      verifyEpisodeIdentity: async (input) => {
+        calls.push(['verify', input.identity]);
+        return { verdict: 'INVALID', confidence: 0.95, model: 'jev-stub', usage: null };
+      },
+      extractEpisodeIdentity: async (input) => {
+        calls.push(['extract', input.seriesCatalog]);
+        return {
+          seriesRef: { type: 'new', name: 'Série Extraída' },
+          seasonNumber: 2,
+          episodeNumber: 8,
+          episodeCode: 'SE-S02-E08',
+          confidence: 0.8,
+          model: 'jev-stub',
+          usage: null,
+        };
+      },
+    };
+    const accounts = { listByTenant: async () => [{ id: accountOne, platform: 'instagram' }] };
+    const socialPublications = {
+      listByAccount: async (tenant, id) => [{
+        tenantId: tenant,
+        socialAccountId: id,
+        platform: 'instagram',
+        externalPublicationId: 'external-1',
+        title: 'FQA-S02-E08',
+        description: 'FQA season 2 episode 8',
+        permalink: 'https://social.example/external-1',
+        thumbnailUrl: null,
+        publishedAt: '2026-10-10T12:00:00.000Z',
+      }],
+    };
+    const tenant = { resolveTenantId: async () => tenantOne };
+    const refresh = new usecases.RefreshEpisodeSuggestions(
+      accounts,
+      socialPublications,
+      repository,
+      classifier,
+      new JsonLocalizationAdapter(),
+      tenant,
+      () => Date.parse('2026-10-16T12:00:00.000Z'),
+    );
+
+    const result = await refresh.execute();
+
+    assert.deepEqual(result.failures, []);
+    assert.equal(result.classified, 1);
+    assert.deepEqual(calls.map(([name]) => name), ['verify', 'extract']);
+
+    const review = await new usecases.GetEpisodeReview(repository, tenant).execute();
+    assert.equal(review.stage, 'SERIES');
+    assert.equal(review.seriesProposals[0].suggestedName, 'Série Extraída');
+    const stored = await repository.listPendingSuggestions(tenantOne);
+    assert.equal(stored[0].identitySource, 'JEV_EXTRACTED');
+    assert.equal(stored[0].identity.episodeCode, 'SE-S02-E08');
   } finally {
     await pool.end();
   }

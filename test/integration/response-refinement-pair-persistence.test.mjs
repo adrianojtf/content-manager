@@ -48,6 +48,7 @@ async function createRepository({ withComment = true } = {}) {
     '017_create_social_publications_and_comment_replies.sql',
     '019_add_app_comment_like_state.sql',
     '022_create_ai_response_edit_pairs.sql',
+    '027_add_response_prompt_version_to_ai_response_edit_pairs.sql',
   ]) {
     await pool.query(await readFile(path.join(migrationDirectory, migration), 'utf8'));
   }
@@ -76,6 +77,7 @@ function pair(overrides = {}) {
     aiModel: 'gemini-3.5-flash-lite',
     aiConfidence: 0.82,
     aiRationale: 'Responde a pergunta.',
+    promptVersion: 'gemini-response-v1',
     intendedTone: 'FRIENDLY',
     toneProfile: { toneProfile: { primaryTone: 'FRIENDLY', modifiers: ['WARM'], customNote: null }, toneProfileSource: 'ACCOUNT' },
     revisionCount: 2,
@@ -88,7 +90,7 @@ function pair(overrides = {}) {
   };
 }
 
-test('migration 022 creates the anonymized append-only ai_response_edit_pairs table', async () => {
+test('migration 022 creates the de-identified append-only ai_response_edit_pairs table', async () => {
   const { pool } = await createRepository();
   try {
     const { rows: columns } = await pool.query(
@@ -99,7 +101,7 @@ test('migration 022 creates the anonymized append-only ai_response_edit_pairs ta
     assert.deepEqual(names, [
       'ai_confidence', 'ai_model', 'ai_provider', 'ai_rationale', 'ai_text', 'analysis_labels_json',
       'evaluation_json', 'final_text', 'id', 'intended_tone', 'language', 'last_edit_reason',
-      'manual_reply_attempt_id', 'platform', 'recorded_at', 'revision_count', 'social_account_id',
+      'manual_reply_attempt_id', 'platform', 'prompt_version', 'recorded_at', 'revision_count', 'social_account_id',
       'tenant_id', 'tone_profile_json',
     ]);
     assert.equal(names.some((name) => /external_|author|comment|reply_id|event_id|expires_at/.test(name)), false);
@@ -133,6 +135,7 @@ test('response refinement pair repository round-trips every field and generated 
     assert.equal(row.ai_model, 'gemini-3.5-flash-lite');
     assert.equal(row.ai_confidence, 0.82);
     assert.equal(row.ai_rationale, 'Responde a pergunta.');
+    assert.equal(row.prompt_version, 'gemini-response-v1');
     assert.equal(row.intended_tone, 'FRIENDLY');
     assert.deepEqual(JSON.parse(row.tone_profile_json), pair().toneProfile);
     assert.equal(row.revision_count, 2);

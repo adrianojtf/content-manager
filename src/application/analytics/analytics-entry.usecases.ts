@@ -3,6 +3,7 @@ import type {
   AnalyticsEntryRepository,
   AnalyticsEpisodeRecord,
   AnalyticsMoneyAmount,
+  AnalyticsSeriesEpisodeDetails,
   AccountFollowerSnapshotRecord,
   AvailableEpisodePublication,
   ManualEpisodeCreationResult,
@@ -13,9 +14,10 @@ import type {
   PerformanceObservationRecord,
 } from '../ports/analytics-entry.repository.port';
 import type { EpisodeReviewSeasonMode, EpisodeReviewSeries } from '../ports/episode-review.repository.port';
-import { normalizeSeriesIdentity } from '../../domain/analytics/episode-identity';
+import { generateCanonicalEpisodeCode, normalizeSeriesIdentity } from '../../domain/analytics/episode-identity';
 import { parseSocialAccountId, type SocialAccountId } from '../../domain/social/social-account-id';
 import type { SocialPlatform } from '../../domain/social/social-account';
+import { buildAnalyticsDashboardReport } from '../../domain/analytics/dashboard-report';
 import { AnalyticsEntryError } from './analytics-entry-error';
 
 const entryActorId = 'LOCAL_PILOT_CREATOR';
@@ -36,6 +38,20 @@ const counterMetrics = [
 ] as const;
 const durationMetrics = ['averageWatchTimeSeconds', 'retentionPercent'] as const;
 const metricKeys = [...counterMetrics, ...durationMetrics] as const;
+
+export class GetAnalyticsDashboard {
+  constructor(
+    private readonly entries: AnalyticsEntryRepository,
+    private readonly tenant: PilotTenantContext,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  async execute() {
+    const tenantId = await this.tenant.resolveTenantId();
+    const data = await this.entries.getDashboardData(tenantId);
+    return buildAnalyticsDashboardReport(data, this.now());
+  }
+}
 
 function invalid(): never {
   throw new AnalyticsEntryError('ANALYTICS_ENTRY_INPUT_INVALID');
@@ -156,11 +172,23 @@ export class CreateAnalyticsSeries {
   }
 }
 
+export class ListAnalyticsEpisodesBySeries {
+  constructor(
+    private readonly entries: AnalyticsEntryRepository,
+    private readonly tenant: PilotTenantContext,
+  ) {}
+
+  async execute(seriesId: string): Promise<readonly AnalyticsSeriesEpisodeDetails[]> {
+    const tenantId = await this.tenant.resolveTenantId();
+    return this.entries.listEpisodesBySeries(tenantId, requireUuid(seriesId));
+  }
+}
+
 export interface CreateAnalyticsEpisodeInput {
   readonly seriesId: string;
   readonly seasonNumber: number | null;
   readonly episodeNumber: number;
-  readonly episodeCode: string;
+  readonly episodeCode?: string;
   readonly productionCost: AnalyticsMoneyAmount | null;
   readonly productionTimeSeconds: number | null;
 }
@@ -173,8 +201,9 @@ export class CreateAnalyticsEpisode {
   ) {}
 
   async execute(input: CreateAnalyticsEpisodeInput): Promise<AnalyticsEpisodeRecord> {
-    const episodeCode = typeof input.episodeCode === 'string' ? input.episodeCode.trim() : '';
-    if (!episodeCode || episodeCode.length > 100
+    const providedEpisodeCode = typeof input.episodeCode === 'string' ? input.episodeCode.trim() : '';
+    if ((input.episodeCode !== undefined && typeof input.episodeCode !== 'string')
+      || providedEpisodeCode.length > 100
       || typeof input.episodeNumber !== 'number' || !Number.isSafeInteger(input.episodeNumber) || input.episodeNumber < 1) {
       invalid();
     }
@@ -186,9 +215,15 @@ export class CreateAnalyticsEpisode {
     const productionTimeSeconds = input.productionTimeSeconds === null || input.productionTimeSeconds === undefined
       ? null
       : requireNonNegativeInteger(input.productionTimeSeconds);
+    const seriesId = requireUuid(input.seriesId);
+    const episodeCode = providedEpisodeCode || generateCanonicalEpisodeCode(
+      seriesId,
+      input.seasonNumber,
+      input.episodeNumber,
+    );
     const tenantId = await this.tenant.resolveTenantId();
     return this.entries.createEpisode(tenantId, {
-      seriesId: requireUuid(input.seriesId),
+      seriesId,
       seasonNumber: input.seasonNumber,
       episodeNumber: input.episodeNumber,
       episodeCode,
@@ -215,8 +250,9 @@ export class CreateManualAnalyticsEpisode {
   ) {}
 
   async execute(input: CreateManualAnalyticsEpisodeInput): Promise<ManualEpisodeCreationResult> {
-    const episodeCode = typeof input.episodeCode === 'string' ? input.episodeCode.trim() : '';
-    if (!episodeCode || episodeCode.length > 100
+    const providedEpisodeCode = typeof input.episodeCode === 'string' ? input.episodeCode.trim() : '';
+    if ((input.episodeCode !== undefined && typeof input.episodeCode !== 'string')
+      || providedEpisodeCode.length > 100
       || !Number.isSafeInteger(input.episodeNumber) || input.episodeNumber < 1
       || (input.seasonNumber !== null
         && (!Number.isSafeInteger(input.seasonNumber) || input.seasonNumber < 1))) {
@@ -240,9 +276,15 @@ export class CreateManualAnalyticsEpisode {
       seenSources.add(key);
       return { socialAccountId, externalPublicationId: selection.externalPublicationId };
     });
+    const seriesId = requireUuid(input.seriesId);
+    const episodeCode = providedEpisodeCode || generateCanonicalEpisodeCode(
+      seriesId,
+      input.seasonNumber,
+      input.episodeNumber,
+    );
     const tenantId = await this.tenant.resolveTenantId();
     return this.entries.createEpisodeWithPublications(tenantId, {
-      seriesId: requireUuid(input.seriesId),
+      seriesId,
       seasonNumber: input.seasonNumber,
       episodeNumber: input.episodeNumber,
       episodeCode,
@@ -268,6 +310,117 @@ export class ListAvailableEpisodePublications {
     }
     const tenantId = await this.tenant.resolveTenantId();
     return this.entries.listUnlinkedPublications(tenantId, input.platform as SocialPlatform);
+  }
+}
+
+export class UpdateAnalyticsEpisode {
+  constructor(
+    private readonly entries: AnalyticsEntryRepository,
+    private readonly tenant: PilotTenantContext,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  async execute(input: {
+    readonly episodeId: string;
+    readonly seriesId: string;
+    readonly seasonNumber: number | null;
+    readonly episodeNumber: number;
+    readonly episodeCode?: string;
+    readonly productionCost: AnalyticsMoneyAmount | null;
+    readonly productionTimeSeconds: number | null;
+  }): Promise<AnalyticsEpisodeRecord> {
+    const episodeId = requireUuid(input.episodeId);
+    const seriesId = requireUuid(input.seriesId);
+    const providedEpisodeCode = typeof input.episodeCode === 'string' ? input.episodeCode.trim() : '';
+    if ((input.episodeCode !== undefined && typeof input.episodeCode !== 'string')
+      || providedEpisodeCode.length > 100
+      || !Number.isSafeInteger(input.episodeNumber) || input.episodeNumber < 1
+      || (input.seasonNumber !== null
+        && (!Number.isSafeInteger(input.seasonNumber) || input.seasonNumber < 1))) {
+      invalid();
+    }
+    const productionCost = requireMoneyAmount(input.productionCost);
+    const productionTimeSeconds = input.productionTimeSeconds === null || input.productionTimeSeconds === undefined
+      ? null
+      : requireNonNegativeInteger(input.productionTimeSeconds);
+    const tenantId = await this.tenant.resolveTenantId();
+    const existing = await this.entries.findEpisodeById(tenantId, episodeId);
+    if (!existing) throw new AnalyticsEntryError('ANALYTICS_ENTRY_EPISODE_NOT_FOUND');
+    const episodeCode = providedEpisodeCode || existing.episodeCode;
+    return this.entries.updateEpisode(tenantId, {
+      episodeId,
+      seriesId,
+      seasonNumber: input.seasonNumber,
+      episodeNumber: input.episodeNumber,
+      episodeCode,
+      productionCost,
+      productionTimeSeconds,
+      actorId: entryActorId,
+      at: new Date(this.now()).toISOString(),
+    });
+  }
+}
+
+export class UpdateAnalyticsEpisodePublication {
+  constructor(
+    private readonly entries: AnalyticsEntryRepository,
+    private readonly tenant: PilotTenantContext,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  async execute(input: {
+    readonly episodeId: string;
+    readonly socialAccountId: string;
+    readonly externalPublicationId: string;
+    readonly next?: { readonly socialAccountId: string; readonly externalPublicationId: string } | null;
+    readonly moveTo?: { readonly seasonNumber: number | null; readonly episodeNumber: number };
+  }): Promise<{ readonly replaced?: boolean; readonly moved?: boolean }> {
+    const episodeId = requireUuid(input.episodeId);
+    const socialAccountId = requireAccountId(input.socialAccountId);
+    const externalPublicationId = typeof input.externalPublicationId === 'string'
+      ? input.externalPublicationId.trim()
+      : '';
+    if (!externalPublicationId || externalPublicationId.length > 300) invalid();
+    const hasNext = input.next !== undefined;
+    const hasMoveTo = input.moveTo !== undefined;
+    if (hasNext === hasMoveTo) invalid();
+    const tenantId = await this.tenant.resolveTenantId();
+    const at = new Date(this.now()).toISOString();
+    if (hasMoveTo) {
+      const moveTo = input.moveTo;
+      if (typeof moveTo !== 'object' || moveTo === null
+        || !Number.isSafeInteger(moveTo.episodeNumber) || moveTo.episodeNumber < 1
+        || (moveTo.seasonNumber !== null
+          && (!Number.isSafeInteger(moveTo.seasonNumber) || moveTo.seasonNumber < 1))) {
+        invalid();
+      }
+      return this.entries.moveEpisodePublicationLink(tenantId, {
+        episodeId,
+        socialAccountId,
+        externalPublicationId,
+        target: { seasonNumber: moveTo.seasonNumber, episodeNumber: moveTo.episodeNumber },
+        actorId: entryActorId,
+        at,
+      });
+    }
+    let next: ManualEpisodePublicationSelection | null = null;
+    if (input.next !== null) {
+      if (typeof input.next !== 'object') invalid();
+      const nextAccountId = requireAccountId(input.next.socialAccountId);
+      const nextExternalId = typeof input.next.externalPublicationId === 'string'
+        ? input.next.externalPublicationId.trim()
+        : '';
+      if (!nextExternalId || nextExternalId.length > 300) invalid();
+      next = { socialAccountId: nextAccountId, externalPublicationId: nextExternalId };
+    }
+    return this.entries.replaceEpisodePublicationLink(tenantId, {
+      episodeId,
+      socialAccountId,
+      externalPublicationId,
+      next,
+      actorId: entryActorId,
+      at,
+    });
   }
 }
 

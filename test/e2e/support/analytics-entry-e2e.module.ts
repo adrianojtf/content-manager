@@ -3,7 +3,11 @@ import {
   CreateAnalyticsEpisode,
   CreateAnalyticsSeries,
   CreateManualAnalyticsEpisode,
+  GetAnalyticsDashboard,
+  ListAnalyticsEpisodesBySeries,
   ListAvailableEpisodePublications,
+  UpdateAnalyticsEpisode,
+  UpdateAnalyticsEpisodePublication,
   UpdateAnalyticsEpisodeEconomics,
   UpsertAnalyticsFollowerSnapshot,
   UpsertAnalyticsMonthlyRevenue,
@@ -18,11 +22,15 @@ export function createAnalyticsEntryE2eModule(useCases: {
   readonly createSeries: Pick<CreateAnalyticsSeries, 'execute'>;
   readonly createEpisode: Pick<CreateAnalyticsEpisode, 'execute'>;
   readonly createManualEpisode: Pick<CreateManualAnalyticsEpisode, 'execute'>;
+  readonly listSeriesEpisodes: Pick<ListAnalyticsEpisodesBySeries, 'execute'>;
   readonly listAvailableEpisodePublications: Pick<ListAvailableEpisodePublications, 'execute'>;
+  readonly updateEpisode: Pick<UpdateAnalyticsEpisode, 'execute'>;
+  readonly updateEpisodePublication: Pick<UpdateAnalyticsEpisodePublication, 'execute'>;
   readonly updateEconomics: Pick<UpdateAnalyticsEpisodeEconomics, 'execute'>;
   readonly upsertObservation: Pick<UpsertAnalyticsPerformanceObservation, 'execute'>;
   readonly upsertSnapshot: Pick<UpsertAnalyticsFollowerSnapshot, 'execute'>;
   readonly upsertRevenue: Pick<UpsertAnalyticsMonthlyRevenue, 'execute'>;
+  readonly dashboard: Pick<GetAnalyticsDashboard, 'execute'>;
 }): DynamicModule {
   return {
     module: AnalyticsEntryE2eModule,
@@ -31,7 +39,11 @@ export function createAnalyticsEntryE2eModule(useCases: {
       { provide: CreateAnalyticsSeries, useValue: useCases.createSeries },
       { provide: CreateAnalyticsEpisode, useValue: useCases.createEpisode },
       { provide: CreateManualAnalyticsEpisode, useValue: useCases.createManualEpisode },
+      { provide: GetAnalyticsDashboard, useValue: useCases.dashboard },
+      { provide: ListAnalyticsEpisodesBySeries, useValue: useCases.listSeriesEpisodes },
       { provide: ListAvailableEpisodePublications, useValue: useCases.listAvailableEpisodePublications },
+      { provide: UpdateAnalyticsEpisode, useValue: useCases.updateEpisode },
+      { provide: UpdateAnalyticsEpisodePublication, useValue: useCases.updateEpisodePublication },
       { provide: UpdateAnalyticsEpisodeEconomics, useValue: useCases.updateEconomics },
       { provide: UpsertAnalyticsPerformanceObservation, useValue: useCases.upsertObservation },
       { provide: UpsertAnalyticsFollowerSnapshot, useValue: useCases.upsertSnapshot },

@@ -119,6 +119,8 @@ export class EpisodeReviewController {
       ANALYTICS_EPISODE_IDENTITY_CONFLICT: HttpStatus.CONFLICT,
       ANALYTICS_EPISODE_CODE_CONFLICT: HttpStatus.CONFLICT,
       ANALYTICS_EPISODE_SOURCE_INVALID: HttpStatus.CONFLICT,
+      ANALYTICS_EPISODE_IDENTITY_EXTRACTION_INVALID: HttpStatus.INTERNAL_SERVER_ERROR,
+      ANALYTICS_EPISODE_IDENTITY_CASCADE_FAILED: HttpStatus.INTERNAL_SERVER_ERROR,
       ANALYTICS_EPISODE_REVIEW_FAILED: HttpStatus.INTERNAL_SERVER_ERROR,
     };
     throw new HttpException({ code }, statusByCode[code] ?? HttpStatus.INTERNAL_SERVER_ERROR);
@@ -142,7 +144,7 @@ function readApprovalInput(value: unknown): ApproveEpisodeSuggestionGroupInput |
     || !value.suggestionIds.every((id) => typeof id === 'string')
     || typeof value.episodeNumber !== 'number'
     || !(value.seasonNumber === null || typeof value.seasonNumber === 'number')
-    || typeof value.episodeCode !== 'string'
+    || (value.episodeCode !== undefined && typeof value.episodeCode !== 'string')
     || !((typeof value.seriesId === 'string' && value.seriesId.length > 0 && value.newSeries === undefined)
       || (value.seriesId === undefined && isNewSeries(value.newSeries)))) {
     return null;

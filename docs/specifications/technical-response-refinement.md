@@ -1,22 +1,22 @@
 # Technical Specification — AI Response Refinement Dataset
 
-**Status:** Draft — not implemented. The audit trail that feeds this dataset (`comment_workflow_events` with `RESPONSE_SUGGESTION_GENERATED`, `RESPONSE_SUGGESTION_EDITED`, `MANUAL_REPLY_ATTEMPTED`, `MANUAL_REPLY_RESULT`) is implemented. The anonymized pair table, repository port, and capture use case are specified here and pending.
+**Status:** Draft — pair capture and provider-specific prompt-version capture are implemented; contextual analysis is specified separately.
 
 **Product PRD:** [AI Response Refinement Dataset](../product/prds/response-refinement.md)  
-**Related specifications:** [Technical Specification — Community Management](technical-community-management.md) · [Generate Response Suggestion](comments/generate-response.md)
+**Related specifications:** [Technical Specification — Community Management](technical-community-management.md) · [Generate Response Suggestion](comments/generate-response.md) · [Response Refinement Analysis](technical-response-refinement-analysis.md)
 
 ## 1. Scope
 
-Persist an append-only, anonymized record every time a creator successfully sends a response that was edited from an AI-generated suggestion. The record pairs the original AI text with the exact sent text plus the metadata required to learn from the human correction. It lives outside the comment 30-day retention cascade and contains no audience personal data.
+Persist an append-only, de-identified record when a creator's edited AI suggestion is successfully sent. The record pairs the original AI text with the exact sent text plus refinement metadata. It lives outside the comment 30-day retention cascade, but tenant/account IDs and response text remain confidential and may contain identifying details.
 
-The capture reuses the existing send path: `SendManualCommentReply` already resolves the exact sent revision, its lineage root, and the linked evaluation, and records `MANUAL_REPLY_ATTEMPTED`/`MANUAL_REPLY_RESULT`. No new HTTP route, no new workflow event type, and no separate approval event are introduced — a successful `MANUAL_REPLY_RESULT` remains the sole "approved and sent" signal.
+The capture reuses the existing send path: `SendManualCommentReply` resolves the exact sent revision, its lineage root, and the linked evaluation, and records `MANUAL_REPLY_ATTEMPTED`/`MANUAL_REPLY_RESULT`. Pair capture itself adds no route or workflow event and no separate approval event; contextual analysis uses separate routes specified in [Response Refinement Analysis](technical-response-refinement-analysis.md).
 
 ## 2. Architectural Placement
 
 - **Domain:** `AiResponseEditPair` — an immutable record; no update or delete path.
-- **Application:** `RecordResponseRefinementPair` use case invoked by `SendManualCommentReply` after a successful `MANUAL_REPLY_RESULT` is appended. The decision logic (is this lineage AI-rooted? does the sent text differ?) is application code, not adapter code.
+- **Application:** `RecordResponseRefinementPair` is invoked by `SendManualCommentReply` after the social responder confirms success and before the successful `MANUAL_REPLY_RESULT` event is appended. The decision logic (is this lineage AI-rooted? does the sent text differ?) is application code, not adapter code.
 - **Ports:** `ResponseRefinementPairRepository` — `append(pair)`, enforced idempotency on the reply-attempt identifier. Read/query ports are out of Phase 1 scope.
-- **Adapters:** Postgres repository adapter plus migration `022_create_ai_response_edit_pairs`. No platform or AI-provider integration is touched.
+- **Adapters:** Postgres repository adapter plus migration `022_create_ai_response_edit_pairs`; prompt-version capture is an additive generator/event contract change. No social-platform integration is changed.
 
 The domain record does not depend on persistence libraries. The capture is best-effort inside the send orchestration; it never changes the send result.
 
@@ -35,6 +35,7 @@ Append-only record written once per successful manual reply attempt that edited 
 | `ai_text` | `payload.text` of the lineage root `RESPONSE_SUGGESTION_GENERATED` event |
 | `final_text` | `payload.text` of the sent version event |
 | `ai_provider`, `ai_model`, `ai_confidence`, `ai_rationale`, `intended_tone` | suggestion payload fields; `ai_rationale` nullable |
+| `prompt_version` | provider-specific prompt-template version on new suggestions; historical rows are `UNKNOWN` |
 | `tone_profile` | immutable suggestion `toneProfile` snapshot plus its `toneProfileSource` |
 | `revision_count` | number of `RESPONSE_SUGGESTION_EDITED` events in the sent lineage |
 | `last_edit_reason` | `reason` of the sent revision event when the sent version is an edit; `null` otherwise |
@@ -43,18 +44,17 @@ Append-only record written once per successful manual reply attempt that edited 
 | `manual_reply_attempt_id` | `attemptId` of the `MANUAL_REPLY_ATTEMPTED`/`MANUAL_REPLY_RESULT` pair — unique, drives idempotency |
 | `recorded_at` | capture timestamp |
 
-### Anonymization contract
+### Data minimization and source-retention boundary
 
-The table must not store: `external_comment_id`, `external_reply_id`, external publication/thread identifiers, comment author fields, comment text, event IDs, or foreign keys to `social_comments`/`comment_workflow_events`. `manual_reply_attempt_id` is an internally generated UUID with no external meaning; it exists for idempotency, not traceability. Nothing in the record can be joined back to a comment after its expiry.
+The table must not store: `external_comment_id`, `external_reply_id`, external publication/thread identifiers, comment author fields, comment text, event IDs, or foreign keys to `social_comments`/`comment_workflow_events`. Tenant/account identifiers, the internal `manual_reply_attempt_id`, and response texts are still confidential data; the table is de-identified, not anonymous.
 
-### Trigger rule
+The attempt ID is used for idempotency and may resolve source context only through a tenant/account-scoped application query that enforces the comment and workflow-event expiration fields. Contextual analysis must not use this correlation after expiration or bypass retention. A source comment is never copied into the pair or analysis record.
 
-A record is appended when all of the following hold for a `MANUAL_REPLY_RESULT` with `status = SUCCEEDED`:
+### Capture and analysis eligibility
 
-1. the sent version's lineage root is `RESPONSE_SUGGESTION_GENERATED` (never `MANUAL_RESPONSE_CREATED` — creator-authored text has no AI baseline to refine); and
-2. `final_text` differs from `ai_text` — this is the "only on modification" gate. A lineage containing an edit that reverted to the exact AI text produces no record.
+Pair capture is attempted only after the social responder confirms success, and only when the sent version's lineage root is `RESPONSE_SUGGESTION_GENERATED` and `final_text` differs from `ai_text`. A creator-authored response or an edit that reverted to the original AI text produces no pair.
 
-Failed, `UNSUPPORTED`, or ambiguous results produce no record, including when the platform call succeeded but the result could not be confirmed.
+Contextual analysis later requires the still-retained matching `MANUAL_REPLY_RESULT` with `status = SUCCEEDED`. Failed, `UNSUPPORTED`, or ambiguous platform outcomes do not trigger pair capture. Since the pair write precedes the success-result event append in the send orchestration, an event-persistence failure can leave a pair row; it is not evidence of a confirmed send and must be excluded from contextual analysis.
 
 ### Idempotency
 
@@ -66,11 +66,12 @@ No `expires_at`; rows are unaffected by the comment retention cascade. Dataset r
 
 ## 4. Flow
 
-1. `SendManualCommentReply` completes its existing flow: the platform reply succeeds, `markRepliedByApp` is attempted, and a `SUCCEEDED` `MANUAL_REPLY_RESULT` is appended.
-2. Still inside the use case, the application evaluates the trigger rule against the already-loaded workflow history: resolve the sent version's root event (`responseVersionRootId` semantics); if the root is an AI suggestion and the texts differ, build the pair.
-3. Refinement context is resolved from the same history: revision count and last edit reason from `RESPONSE_SUGGESTION_EDITED` events of that lineage; evaluation snapshot from the `RESPONSE_EVALUATED` event linked to the sent revision (`payload.revisionEventId`); analysis labels from the suggestion's `parentEventId` analysis chain with `COMMENT_ANALYSIS_CORRECTED` fields applied over the original `COMMENT_ANALYSIS_CREATED` values.
-4. `ResponseRefinementPairRepository.append` persists the record.
-5. Any failure in steps 2–4 is caught, logged, and surfaced as `refinementPairPersisted: false` on the `MANUAL_REPLY_RESULT` payload (same pattern as `appReplyStatusPersisted`); the send still returns success.
+1. `SendManualCommentReply` appends `MANUAL_REPLY_ATTEMPTED`, then the platform call succeeds and `markRepliedByApp` is attempted.
+2. Before appending `MANUAL_REPLY_RESULT`, the application evaluates whether the sent revision has an AI suggestion root and whether its text differs from the original AI text. The pair is captured only when both conditions hold. New suggestion prompt versions are copied into the pair.
+3. Resolve revision count and last edit reason from `RESPONSE_SUGGESTION_EDITED` events in the lineage; evaluation from a `RESPONSE_EVALUATED` event linked to the exact sent revision; and analysis labels from its effective comment-analysis chain with corrections applied.
+4. `ResponseRefinementPairRepository.append` persists the pair best-effort.
+5. The application appends `MANUAL_REPLY_RESULT` with `status = SUCCEEDED` and `refinementPairPersisted`. If this result event cannot be persisted after the platform call and pair capture, the pair may exist without a successful result event; contextual analysis must skip it because success cannot be verified.
+6. Pair-write failure is caught, logged, and surfaced as `refinementPairPersisted: false`; it never changes the already-dispatched send result.
 
 Batch send-all reuses the per-comment route serially, so each successful edited send captures its own pair with no additional orchestration.
 
@@ -85,8 +86,8 @@ Batch send-all reuses the per-comment route serially, so each successful edited 
 ## 6. Testing
 
 - **Unit (test-first):** trigger rule matrix — AI-rooted+edited → record; AI-rooted unedited → none; manual response → none; failed/unsupported/ambiguous result → none; edit-reverted-to-AI-text → none; idempotent re-append. Payload mapping including tone snapshot, revision count, last reason, evaluation, and corrected analysis labels. Best-effort failure leaves send success intact.
-- **Integration:** migration 022 applies; Postgres adapter round-trips all fields; unique constraint on `manual_reply_attempt_id` holds; rows persist after `social_comments`/`comment_workflow_events` expiry deletes; anonymization contract — no comment-scoped columns or foreign keys exist.
-- **E2E:** edit → save revision → send → verify exactly one anonymized pair with both texts; unchanged send → zero pairs; deterministic social/JEV doubles only.
+- **Integration:** migration 022 applies; Postgres adapter round-trips all fields; unique constraint on `manual_reply_attempt_id` holds; rows persist after `social_comments`/`comment_workflow_events` expiry deletes; data-minimization contract — no comment-scoped columns or foreign keys exist.
+- **E2E:** edit → save revision → send → verify exactly one de-identified pair with both texts; unchanged send → zero pairs; deterministic social/JEV doubles only.
 
 ## 7. Observability
 
@@ -96,12 +97,12 @@ Batch send-all reuses the per-comment route serially, so each successful edited 
 
 ## 8. Security Considerations
 
-- The record holds creator-authored and AI-generated text — treat as tenant-confidential data with the same access posture as other tenant tables.
+- The record holds creator-authored and AI-generated text that can repeat information from a comment — treat as tenant-confidential data and potentially personal data.
 - No provider credentials, commenter identity, or external identifiers may be written; enforce via the append port contract and integration tests, not by convention.
-- Privacy policy wording must disclose the anonymized post-retention refinement dataset before external launch.
+- Privacy policy and retention/removal policy must disclose this de-identified post-retention response-text dataset before external launch.
 
 ## 9. Open Questions
 
-- Retention/removal policy and creator-initiated purge for the dataset itself (Phase 3 tenant deletion should cascade `tenant_id`).
+- Retention/removal policy and creator-initiated purge for the dataset itself (tenant/account deletion should cascade pair and analysis data).
 - Whether analysis labels should include corrected-only signals vs. the full effective label set — specified above as the effective set; confirm during implementation.
-- Whether a future read surface (export, review UI, or JEV feedback input) is required; none is specified in Phase 1.
+- Whether new capture records should preserve the original editor's authenticated identity; existing records cannot be attributed to a particular user.

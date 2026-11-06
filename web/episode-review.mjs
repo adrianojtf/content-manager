@@ -1,6 +1,8 @@
 import { formatDateTime, formatNumber, t, uiLocale } from './i18n.mjs';
 import { escapeHtml, networkInfo } from './view.mjs';
 
+const seriesPageSize = 10;
+
 function normalizedName(value) {
   return String(value ?? '').normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -220,6 +222,382 @@ function renderManualSeriesForm(model) {
   </form>`;
 }
 
+function renderSeriesCatalog(model) {
+  const series = [...(model.series ?? [])].sort((left, right) => left.name.localeCompare(right.name, uiLocale, { numeric: true }));
+  const pageCount = Math.max(1, Math.ceil(series.length / seriesPageSize));
+  const page = Math.max(0, Math.min(pageCount - 1, Number.isSafeInteger(model.seriesPage) ? model.seriesPage : 0));
+  const pageItems = series.slice(page * seriesPageSize, (page + 1) * seriesPageSize);
+  const items = pageItems.map((item) => `<li data-series-catalog-item="${escapeHtml(item.id)}">
+    <button class="episode-series-row" type="button" data-action="open-series-details" data-series-id="${escapeHtml(item.id)}">
+      <span class="episode-series-row-main">
+        <strong>${escapeHtml(item.name)}</strong>
+        <small>${t(item.seasonMode === 'SEASONAL' ? 'episodes.seasonal' : 'episodes.nonSeasonal')}</small>
+      </span>
+      ${item.aliases?.length ? `<span class="episode-series-aliases">${escapeHtml(item.aliases.join(', '))}</span>` : ''}
+      <span class="episode-series-row-chevron" aria-hidden="true">›</span>
+    </button>
+  </li>`).join('');
+  const pagination = series.length > seriesPageSize
+    ? `<nav class="episode-series-pagination" aria-label="${t('episodes.seriesCatalogTitle')}">
+        <button class="button small" type="button" data-action="series-list-page" data-page="${page - 1}"${page === 0 ? ' disabled' : ''}>${t('episodes.seriesListPrevious')}</button>
+        <span aria-live="polite">${t('episodes.seriesListPage', {
+          current: formatNumber(page + 1),
+          total: formatNumber(pageCount),
+        })}</span>
+        <button class="button small" type="button" data-action="series-list-page" data-page="${page + 1}"${page === pageCount - 1 ? ' disabled' : ''}>${t('episodes.seriesListNext')}</button>
+      </nav>`
+    : '';
+  return `<section class="episode-review-card episode-series-catalog" data-episode-series-catalog aria-labelledby="episodeSeriesCatalogTitle">
+    <header class="episode-review-card-heading">
+      <h2 id="episodeSeriesCatalogTitle">${t('episodes.seriesCatalogTitle')}</h2>
+    </header>
+    ${items
+      ? `<ul class="episode-series-list">${items}</ul>${pagination}`
+      : `<p class="episode-series-empty">${t('episodes.noCreatedSeries')}</p>`}
+  </section>`;
+}
+
+function renderSeriesEpisodeList(model) {
+  const episodes = model.seriesEpisodes ?? [];
+  if (model.seriesEpisodesLoading) {
+    return `<div class="episode-review-state" role="status" aria-busy="true">${t('episodes.loading')}</div>`;
+  }
+  if (model.seriesEpisodesError) {
+    return `<div class="episode-review-state episode-review-error" role="alert">
+      ${t('episodes.loadFailed')}
+      <button class="button small" type="button" data-action="retry-series-episodes">${t('report.retry')}</button>
+    </div>`;
+  }
+  if (!episodes.length) {
+    return `<div class="episode-review-state"><p>${t('episodes.noSeriesEpisodes')}</p></div>`;
+  }
+  const series = (model.series ?? []).find((item) => item.id === model.selectedSeriesId);
+  const seasonal = series?.seasonMode === 'SEASONAL';
+  return `<ol class="episode-series-episode-list" data-series-episodes>${episodes.map((episode) => `<li data-series-episode-id="${escapeHtml(episode.id)}">
+    <article class="episode-series-episode-card">
+      <header class="episode-series-episode-card-heading">
+        <span class="episode-series-episode-number">${escapeHtml(episode.seasonNumber
+          ? t('episodes.seasonLabel', { season: formatNumber(episode.seasonNumber) })
+          : '')} ${escapeHtml(t('episodes.episodeLabel', { episode: formatNumber(episode.episodeNumber) }))}</span>
+        <button class="episode-edit-pencil" type="button" data-action="edit-series-episode" data-episode-id="${escapeHtml(episode.id)}" title="${t('episodes.editEpisode')}" aria-label="${t('episodes.editEpisode')}"${model.saving ? ' disabled' : ''}>✎</button>
+      </header>
+      ${model.editingEpisodeId === episode.id ? renderSeriesEpisodeEditForm(episode, series, seasonal, model) : ''}
+      <p class="episode-series-episode-code">${escapeHtml(episode.episodeCode)}</p>
+      ${episode.publications?.length
+        ? `<ul class="episode-series-episode-sources">${(() => {
+          const fallbackThumbnail = episode.publications
+            .map((publication) => safeThumbnailUrl(publication.thumbnailUrl))
+            .find(Boolean) ?? '';
+          return episode.publications.map((publication) => {
+          const title = publication.title?.trim() || publication.externalPublicationId;
+          const thumbnail = safeThumbnailUrl(publication.thumbnailUrl) || fallbackThumbnail;
+          const permalink = safePublicationUrl(publication.permalink);
+          const publishedDate = publication.publishedAt ? new Date(publication.publishedAt) : null;
+          const publishedAt = publishedDate && Number.isFinite(publishedDate.getTime())
+            ? t('episodes.publishedAt', { date: escapeHtml(formatDateTime(publishedDate)) })
+            : '';
+          const linkKey = `${episode.id}\u0000${publication.socialAccountId}\u0000${publication.externalPublicationId}`;
+          const editingLink = model.editingLink?.key === linkKey;
+          const otherThumbs = episode.publications
+            .map((candidate) => safeThumbnailUrl(candidate.thumbnailUrl))
+            .filter((candidate) => candidate && candidate !== thumbnail);
+          return `<li data-series-episode-source>
+            ${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-thumb-fallbacks='${escapeHtml(JSON.stringify(otherThumbs))}'>` : ''}
+            <div class="episode-series-episode-source-copy">
+              <div class="episode-series-episode-source-meta">
+                <span class="episode-platform-pill">${escapeHtml(platformName(publication.platform))}</span>
+                ${publication.socialAccountName ? `<span>${escapeHtml(t('episodes.account', { name: publication.socialAccountName }))}</span>` : ''}
+                ${publishedAt ? `<span>${publishedAt}</span>` : ''}
+              </div>
+              <strong>${escapeHtml(title)}</strong>
+              ${publication.description ? `<p>${escapeHtml(publication.description)}</p>` : ''}
+              ${permalink ? `<a class="episode-source-link" href="${escapeHtml(permalink)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t('episodes.publication'))}</a>` : ''}
+              <small>${escapeHtml(publication.externalPublicationId)}</small>
+            </div>
+            ${editingLink ? renderEpisodeLinkEditForm(episode, publication, seasonal, model) : `<button class="episode-edit-pencil" type="button" data-action="edit-episode-publication" data-episode-id="${escapeHtml(episode.id)}" data-account-id="${escapeHtml(publication.socialAccountId)}" data-publication-id="${escapeHtml(publication.externalPublicationId)}" data-platform="${escapeHtml(publication.platform)}" title="${t('episodes.editEpisode')}" aria-label="${t('episodes.editEpisode')}"${model.saving ? ' disabled' : ''}>✎</button>`}
+          </li>`;
+        }).join('')})()}</ul>`
+        : ''}
+    </article>
+  </li>`).join('')}</ol>`;
+}
+
+function renderEpisodeLinkEditForm(episode, publication, seasonal, model) {
+  return `<form class="episode-link-edit" data-episode-link-edit-form data-episode-id="${escapeHtml(episode.id)}" data-account-id="${escapeHtml(publication.socialAccountId)}" data-publication-id="${escapeHtml(publication.externalPublicationId)}" aria-busy="${String(model.saving)}">
+    <div class="episode-link-edit-fields">
+      ${seasonal ? `<label class="field">
+        <span>${t('episodes.seasonNumber')}</span>
+        <input name="seasonNumber" type="number" min="1" step="1" value="${escapeHtml(episode.seasonNumber ?? '')}" required${model.saving ? ' disabled' : ''}>
+      </label>` : ''}
+      <label class="field">
+        <span>${t('episodes.episodeNumber')}</span>
+        <span class="episode-link-edit-input">
+          <input name="episodeNumber" type="number" min="1" step="1" value="${escapeHtml(episode.episodeNumber)}" required${model.saving ? ' disabled' : ''}>
+          <button class="episode-link-edit-confirm" type="submit" title="${t('episodes.saveEpisode')}" aria-label="${t('episodes.saveEpisode')}"${model.saving ? ' disabled' : ''}>✓</button>
+          <button class="episode-link-edit-cancel" type="button" data-action="cancel-episode-publication-edit" title="${t('episodes.cancel')}" aria-label="${t('episodes.cancel')}"${model.saving ? ' disabled' : ''}>×</button>
+        </span>
+      </label>
+    </div>
+  </form>`;
+}
+
+function renderSeriesEpisodeEditForm(episode, series, seasonal, model) {
+  const costAmount = episode.productionCost?.amount ?? '';
+  const timeSeconds = episode.productionTimeSeconds ?? '';
+  return `<form class="episode-link-edit" data-series-episode-edit-form data-episode-id="${escapeHtml(episode.id)}" aria-busy="${String(model.saving)}">
+    <div class="episode-link-edit-fields">
+      ${seasonal ? `<label class="field">
+        <span>${t('episodes.seasonNumber')}</span>
+        <input name="seasonNumber" type="number" min="1" step="1" value="${escapeHtml(episode.seasonNumber ?? '')}" required${model.saving ? ' disabled' : ''}>
+      </label>` : ''}
+      <label class="field">
+        <span>${t('episodes.episodeNumber')}</span>
+        <input name="episodeNumber" type="number" min="1" step="1" value="${escapeHtml(episode.episodeNumber)}" required${model.saving ? ' disabled' : ''}>
+      </label>
+      <label class="field">
+        <span>${t('episodes.episodeCode')}</span>
+        <input name="episodeCode" type="text" maxlength="100" value="${escapeHtml(episode.episodeCode ?? '')}"${model.saving ? ' disabled' : ''}>
+      </label>
+      <label class="field">
+        <span>${t('episodes.productionCost')}</span>
+        <input name="productionCostAmount" type="number" min="0" step="0.01" inputmode="decimal" value="${escapeHtml(costAmount)}"${model.saving ? ' disabled' : ''}>
+      </label>
+      <label class="field">
+        <span>${t('episodes.productionTime')}</span>
+        <span class="episode-link-edit-input">
+          <input name="productionTimeSeconds" type="number" min="0" step="1" value="${escapeHtml(timeSeconds)}"${model.saving ? ' disabled' : ''}>
+          <button class="episode-link-edit-confirm" type="submit" title="${t('episodes.saveEpisode')}" aria-label="${t('episodes.saveEpisode')}"${model.saving ? ' disabled' : ''}>✓</button>
+          <button class="episode-link-edit-cancel" type="button" data-action="cancel-series-episode-edit" title="${t('episodes.cancel')}" aria-label="${t('episodes.cancel')}"${model.saving ? ' disabled' : ''}>×</button>
+        </span>
+      </label>
+    </div>
+  </form>`;
+}
+
+function renderSeriesPendingSuggestions(model) {
+  const suggestions = model.seriesPendingSuggestions ?? [];
+  if (model.seriesPendingSuggestionsLoading) {
+    return `<div class="episode-review-state" role="status" aria-busy="true">${t('episodes.loading')}</div>`;
+  }
+  if (model.seriesPendingSuggestionsError) {
+    return `<div class="episode-review-state episode-review-error" role="alert">
+      ${t('episodes.loadFailed')}
+      <button class="button small" type="button" data-action="retry-series-pending-suggestions">${t('report.retry')}</button>
+    </div>`;
+  }
+  if (!suggestions.length) return '';
+  const series = (model.series ?? []).find((item) => item.id === model.selectedSeriesId);
+  const selectedIds = model.seriesPendingEpisodeSelection ?? [];
+  const episodeNumberDrafts = model.seriesPendingEpisodeNumberDrafts ?? {};
+  const saving = Boolean(model.seriesPendingEpisodeSaving);
+  const renderSuggestion = (suggestion) => {
+    const publication = suggestion.publication ?? {};
+    const identity = suggestion.identity ?? {};
+    const description = publication.description?.trim() ?? '';
+    const descriptionTitle = description.replace(/\s+/g, ' ');
+    const identifiedEpisode = Number.isSafeInteger(identity.episodeNumber) && identity.episodeNumber > 0
+      ? t('episodes.episodeLabel', { episode: formatNumber(identity.episodeNumber) })
+      : '';
+    const title = publication.title?.trim() || descriptionTitle.slice(0, 100) || identifiedEpisode || t('episodes.publication');
+    const thumbnail = safeThumbnailUrl(publication.thumbnailUrl);
+    const network = networkInfo[publication.platform];
+    const permalink = safePublicationUrl(publication.permalink);
+    const publishedDate = publication.publishedAt ? new Date(publication.publishedAt) : null;
+    const publishedAt = publishedDate && Number.isFinite(publishedDate.getTime())
+      ? t('episodes.publishedAt', { date: escapeHtml(formatDateTime(publishedDate)) })
+      : '';
+    const episode = Number.isSafeInteger(identity.episodeNumber) && identity.episodeNumber > 0
+      ? t('episodes.episodeLabel', { episode: formatNumber(identity.episodeNumber) })
+      : t('analytics.unavailable');
+    const seasonal = series?.seasonMode === 'SEASONAL';
+    const seasonNumber = seasonal ? suggestion.setupSeasonNumber : null;
+    const displaySeasonNumber = suggestion.setupSeasonConfirmedAt
+      ? suggestion.setupSeasonNumber
+      : identity.seasonNumber;
+    const season = Number.isSafeInteger(displaySeasonNumber) && displaySeasonNumber > 0
+      ? t('episodes.seasonLabel', { season: formatNumber(displaySeasonNumber) })
+      : '';
+    const extractedEpisodeNumber = Number.isSafeInteger(identity.episodeNumber) && identity.episodeNumber > 0
+      ? identity.episodeNumber
+      : null;
+    const draftEpisodeNumber = Number(episodeNumberDrafts[suggestion.id]);
+    const episodeNumber = extractedEpisodeNumber
+      ?? (Number.isSafeInteger(draftEpisodeNumber) && draftEpisodeNumber > 0 ? draftEpisodeNumber : null);
+    const readyWithoutEpisodeNumber = Boolean(series
+      && suggestion.setupSeriesId === series.id
+      && suggestion.setupSeriesConfirmedAt
+      && suggestion.setupSeasonConfirmedAt
+      && (!seasonal || (Number.isSafeInteger(seasonNumber) && seasonNumber > 0))
+      && (suggestion.classification === 'EPISODE' || suggestion.classification === 'UNCERTAIN'));
+    const ready = readyWithoutEpisodeNumber && episodeNumber !== null;
+    const isChecked = selectedIds.includes(suggestion.id);
+    const checked = isChecked ? ' checked' : '';
+    const disabled = !ready || saving ? ' disabled' : '';
+    const episodeNumberEditor = extractedEpisodeNumber === null
+      ? `<label class="episode-series-pending-code">
+          <span>${t('episodes.episodeNumber')}</span>
+          <input type="number" min="1" step="1" data-series-pending-episode-number value="${escapeHtml(episodeNumberDrafts[suggestion.id] ?? '')}"${isChecked ? ' required' : ''}${saving ? ' disabled' : ''}>
+        </label>`
+      : '';
+    return `<li data-series-pending-suggestion-id="${escapeHtml(suggestion.id)}">
+      <article class="episode-series-pending-item has-media">
+        <div class="episode-series-pending-media">
+          ${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" data-series-pending-thumbnail loading="lazy" referrerpolicy="no-referrer">` : ''}
+          <div class="episode-series-pending-image-fallback"${thumbnail ? ' hidden' : ''}>
+            ${network ? `<span class="social-logo ${network.className}" aria-hidden="true">${network.symbol}</span>` : escapeHtml(t('episodes.publication'))}
+          </div>
+        </div>
+        <div class="episode-series-pending-copy">
+          <label class="episode-series-pending-select">
+            <input type="checkbox" data-series-pending-episode-suggestion-id="${escapeHtml(suggestion.id)}"
+              data-season-number="${escapeHtml(seasonNumber ?? '')}"
+              data-episode-number="${escapeHtml(episodeNumber ?? '')}"
+              data-ready-without-episode-number="${String(readyWithoutEpisodeNumber)}"${checked}${disabled}>
+            <span>${t('episodes.selectPendingEpisode')}</span>
+          </label>
+          <div class="episode-series-pending-meta">
+            <span class="episode-platform-pill">${escapeHtml(platformName(publication.platform))}</span>
+            ${suggestion.socialAccountName ? `<span>${escapeHtml(t('episodes.account', { name: suggestion.socialAccountName }))}</span>` : ''}
+            <span data-series-pending-episode-label>${escapeHtml([season, episode].filter(Boolean).join(' · '))}</span>
+            ${publishedAt ? `<span>${publishedAt}</span>` : ''}
+          </div>
+          <strong>${escapeHtml(title)}</strong>
+          ${description ? `<p>${escapeHtml(description)}</p>` : ''}
+          ${episodeNumberEditor}
+          ${permalink ? `<a class="episode-source-link" href="${escapeHtml(permalink)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(t('episodes.openPublication', { title }))}">${escapeHtml(t('episodes.publication'))}</a>` : ''}
+          <small>${escapeHtml(t('report.publicationId'))}: ${escapeHtml(publication.externalPublicationId)}</small>
+          <small class="episode-series-pending-needs-review"${ready ? ' hidden' : ''}>${t('episodes.pendingSuggestionNeedsReview')}</small>
+        </div>
+      </article>
+    </li>`;
+  };
+  const suggestionsByPlatform = new Map();
+  for (const suggestion of suggestions) {
+    const platform = suggestion.publication?.platform ?? 'unknown';
+    const group = suggestionsByPlatform.get(platform) ?? [];
+    group.push(suggestion);
+    suggestionsByPlatform.set(platform, group);
+  }
+  const items = [...suggestionsByPlatform.entries()]
+    .sort(([left], [right]) => platformName(left).localeCompare(platformName(right), uiLocale))
+    .map(([platform, platformSuggestions]) => {
+      const orderedSuggestions = platformSuggestions.sort((left, right) => {
+        const leftDate = Date.parse(left.publication?.publishedAt ?? '');
+        const rightDate = Date.parse(right.publication?.publishedAt ?? '');
+        const leftTime = Number.isFinite(leftDate) ? leftDate : Number.POSITIVE_INFINITY;
+        const rightTime = Number.isFinite(rightDate) ? rightDate : Number.POSITIVE_INFINITY;
+        if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
+        return String(left.publication?.externalPublicationId ?? '')
+          .localeCompare(String(right.publication?.externalPublicationId ?? ''), uiLocale, { numeric: true });
+      });
+      return `<li class="episode-series-pending-network" data-series-pending-network="${escapeHtml(platform)}">
+        <h4>${escapeHtml(platformName(platform))}</h4>
+        <ul>${orderedSuggestions.map(renderSuggestion).join('')}</ul>
+      </li>`;
+    }).join('');
+  return `<section class="episode-review-card episode-series-pending" data-series-pending-suggestions aria-labelledby="seriesPendingSuggestionsTitle">
+    <header class="episode-review-card-heading">
+      <div>
+        <h3 id="seriesPendingSuggestionsTitle">${t('episodes.seriesPendingSuggestions')}</h3>
+        <p>${t('episodes.seriesPendingReview')}</p>
+      </div>
+    </header>
+    <form data-series-pending-episode-form>
+      <ul class="episode-series-pending-networks">${items}</ul>
+      <footer class="episode-review-actions">
+        <span class="episode-series-suggestion-count" data-series-pending-episode-count role="status" aria-live="polite">${t('episodes.seriesPendingSelectionCount', { count: formatNumber(selectedIds.length) })}</span>
+        <button class="button primary" type="submit" data-action="add-series-pending-episodes"${saving || !selectedIds.length ? ' disabled' : ''}>${saving ? t('episodes.saving') : t('episodes.addSelectedSeriesEpisodes')}</button>
+      </footer>
+    </form>
+  </section>`;
+}
+
+function renderSeriesSuggestionCandidate(suggestion, selectedSuggestionIds, saving) {
+  const publication = suggestion.publication ?? {};
+  const identity = suggestion.identity ?? {};
+  const title = publication.title?.trim()
+    || publication.description?.trim().replace(/\s+/g, ' ').slice(0, 100)
+    || (Number.isSafeInteger(identity.episodeNumber) ? t('episodes.episodeLabel', { episode: formatNumber(identity.episodeNumber) }) : '')
+    || t('episodes.publication');
+  const checked = selectedSuggestionIds.includes(suggestion.id) ? ' checked' : '';
+  const disabled = saving ? ' disabled' : '';
+  const episode = Number.isSafeInteger(identity.episodeNumber) && identity.episodeNumber > 0
+    ? t('episodes.episodeLabel', { episode: formatNumber(identity.episodeNumber) })
+    : t('analytics.unavailable');
+  const season = Number.isSafeInteger(identity.seasonNumber) && identity.seasonNumber > 0
+    ? t('episodes.seasonLabel', { season: formatNumber(identity.seasonNumber) })
+    : '';
+  return `<label class="episode-series-suggestion" data-series-suggestion-row>
+    <input type="checkbox" data-series-suggestion-id="${escapeHtml(suggestion.id)}"${checked}${disabled}>
+    <span class="episode-series-suggestion-copy">
+      <strong>${escapeHtml(title || t('episodes.publication'))}</strong>
+      <small>${escapeHtml([platformName(publication.platform), season, episode].filter(Boolean).join(' · '))}</small>
+    </span>
+  </label>`;
+}
+
+function renderSeriesSuggestionModal(model) {
+  const modal = model.seriesSuggestionModal;
+  if (!modal?.open) return '';
+  const selectedSuggestionIds = modal.selectedSuggestionIds ?? [];
+  const content = modal.loading
+    ? `<div class="episode-review-state" role="status" aria-busy="true">${t('episodes.loading')}</div>`
+    : modal.error
+      ? `<div class="episode-review-state episode-review-error" role="alert">${t('episodes.loadFailed')} <button class="button small" type="button" data-action="retry-series-suggestions">${t('report.retry')}</button></div>`
+      : modal.candidates?.length
+        ? `<div class="episode-series-suggestion-list">${modal.candidates.map((suggestion) => (
+          renderSeriesSuggestionCandidate(suggestion, selectedSuggestionIds, modal.saving)
+        )).join('')}</div>`
+        : `<div class="episode-review-state"><p>${t('episodes.noSeriesSuggestions')}</p></div>`;
+  return `<div class="episode-series-suggestion-backdrop" data-series-suggestions-backdrop>
+    <section class="episode-series-suggestion-modal" data-series-suggestion-modal role="dialog" aria-modal="true" tabindex="-1" aria-labelledby="seriesSuggestionTitle">
+      <header class="episode-review-card-heading">
+        <div>
+          <h2 id="seriesSuggestionTitle">${t('episodes.seriesSuggestionsTitle')}</h2>
+          <p>${t('episodes.seriesSuggestionsDescription')}</p>
+        </div>
+        <button class="button small" type="button" data-action="close-series-suggestions" aria-label="${t('episodes.closePicker')}">×</button>
+      </header>
+      <form data-series-suggestion-form>
+        ${content}
+        <footer class="episode-review-actions">
+          <span class="episode-series-suggestion-count" data-series-suggestion-count>${t('episodes.seriesSuggestionSelectedCount', { selected: formatNumber(selectedSuggestionIds.length) })}</span>
+          <button class="button primary" type="submit" data-action="add-series-suggestions"${modal.loading || modal.error || modal.saving || !selectedSuggestionIds.length ? ' disabled' : ''}>${modal.saving ? t('episodes.saving') : t('episodes.addSelectedSuggestions')}</button>
+          <button class="button" type="button" data-action="close-series-suggestions"${modal.saving ? ' disabled' : ''}>${t('episodes.cancel')}</button>
+        </footer>
+      </form>
+    </section>
+  </div>`;
+}
+
+function renderSeriesDetails(model) {
+  const series = (model.series ?? []).find((item) => item.id === model.selectedSeriesId);
+  if (!series) {
+    return `<section class="episode-series-detail" data-series-details>
+      <button class="button" type="button" data-action="back-to-series-list">${t('episodes.seriesDetailsBack')}</button>
+      <div class="episode-review-state"><p>${t('episodes.noCreatedSeries')}</p></div>
+    </section>${renderSeriesSuggestionModal(model)}`;
+  }
+  return `<section class="episode-series-detail" data-series-details aria-labelledby="seriesDetailTitle">
+    <header class="episode-series-detail-heading">
+      <button class="button" type="button" data-action="back-to-series-list">${t('episodes.seriesDetailsBack')}</button>
+      <div>
+        <p class="episode-review-kicker">${t('episodes.series')}</p>
+        <h2 id="seriesDetailTitle">${escapeHtml(series.name)}</h2>
+        <p>${t(series.seasonMode === 'SEASONAL' ? 'episodes.seasonal' : 'episodes.nonSeasonal')}</p>
+      </div>
+      <button class="button primary" type="button" data-action="open-series-suggestions">${t('episodes.suggestEpisodes')}</button>
+    </header>
+    <section class="episode-review-card" aria-labelledby="seriesEpisodesTitle">
+      <header class="episode-review-card-heading">
+        <h3 id="seriesEpisodesTitle">${t('episodes.seriesEpisodes')}</h3>
+      </header>
+      ${renderSeriesEpisodeList(model)}
+    </section>
+    ${renderSeriesPendingSuggestions(model)}
+  </section>${renderSeriesSuggestionModal(model)}`;
+}
+
 function renderManualPublicationTile(platform, selection, saving) {
   const info = networkInfo[platform];
   if (!info) return '';
@@ -276,10 +654,6 @@ function renderManualEpisodeForm(model) {
       <label class="field">
         <span>${t('episodes.episodeNumber')}</span>
         <input name="episodeNumber" type="number" min="1" step="1" value="${escapeHtml(draft.episodeNumber ?? '')}" required${model.saving ? ' disabled' : ''}>
-      </label>
-      <label class="field episode-code-field">
-        <span>${t('episodes.episodeCode')}</span>
-        <input name="episodeCode" maxlength="100" value="${escapeHtml(draft.episodeCode ?? '')}" required${model.saving ? ' disabled' : ''}>
       </label>
     </div>
     <fieldset class="manual-publication-fieldset">
@@ -471,7 +845,6 @@ function renderGroup(group, model, unmatchedReason = null) {
   const seasonMode = existingSeries?.seasonMode
     ?? (seasonStatus === 'NUMBERED' ? 'SEASONAL' : seasonStatus === 'NON_SEASONAL' ? 'NON_SEASONAL' : '');
   const episodeNumber = group.episodeNumber ?? first.identity?.episodeNumber ?? '';
-  const episodeCode = group.episodeCode ?? first.identity?.episodeCode ?? '';
   const suggestionIds = publications.map((item) => item.id);
   const hasNumberedSeason = seasonStatus === 'NUMBERED' && Number.isSafeInteger(suggestedSeason);
   const heading = hasNumberedSeason
@@ -528,10 +901,6 @@ function renderGroup(group, model, unmatchedReason = null) {
         <span>${t('episodes.episodeNumber')}</span>
         <input name="episodeNumber" type="number" min="1" step="1" value="${escapeHtml(episodeNumber)}" required${disabled}>
       </label>
-      <label class="field episode-code-field">
-        <span>${t('episodes.episodeCode')}</span>
-        <input name="episodeCode" maxlength="100" value="${escapeHtml(episodeCode)}" required${disabled}>
-      </label>
     </div>
     <footer class="episode-review-actions">
       <button class="button primary" type="submit" data-episode-group-action data-action="approve-episode-group"${disabled}>${model.saving ? t('episodes.saving') : t('episodes.approve')}</button>
@@ -564,6 +933,11 @@ function renderEpisodeStep(groups, unmatched, model) {
 }
 
 export function renderEpisodeReviewScreen(model) {
+  if (model.selectedSeriesId) {
+    return `<section class="episode-review" aria-label="${t('episodes.series')}">
+      ${renderSeriesDetails(model)}
+    </section>`;
+  }
   const stage = model.stage ?? 'EPISODES';
   const groups = (model.groups ?? []).map((group) => ({ group, reason: null }));
   const unmatched = model.unmatched ?? [];
@@ -585,8 +959,17 @@ export function renderEpisodeReviewScreen(model) {
   const failures = model.refreshResult?.failures?.length
     ? `<p class="episode-review-reason" role="status">${t('episodes.refreshPartial', { failed: formatNumber(model.refreshResult.failures.length) })}</p>`
     : '';
-  const manualEpisodeAvailable = stage === 'EPISODES' || stage === 'COMPLETE';
-  const manualEntry = `${renderManualSeriesForm(model)}${manualEpisodeAvailable ? renderManualEpisodeForm(model) : ''}`;
+  const recommendationsOpen = Boolean(model.recommendationsOpen);
+  const recommendations = recommendationsOpen
+    ? `<section class="episode-recommendations" id="episodeRecommendations" aria-label="${t('episodes.answersLabel')}">
+        ${renderSetupProgress(stage)}
+        ${stage === 'SERIES' ? `<div class="episode-setup-step-heading"><h2>${t('episodes.seriesStepTitle')}</h2><p>${t('episodes.seriesStepDescription')}</p></div>` : ''}
+        ${stage === 'SEASONS' ? `<div class="episode-setup-step-heading"><h2>${t('episodes.seasonStepTitle')}</h2><p>${t('episodes.seasonStepDescription')}</p></div>` : ''}
+        <div class="episode-review-grid" aria-busy="${String(loading || model.refreshing || model.saving)}">
+          ${content}
+        </div>
+      </section>`
+    : '';
 
   return `<section class="episode-review" aria-labelledby="episodeReviewTitle">
     <header class="episode-review-heading">
@@ -597,19 +980,17 @@ export function renderEpisodeReviewScreen(model) {
       </div>
       <div class="episode-review-heading-actions">
         <button class="button" type="button" data-action="toggle-manual-series-form" aria-expanded="${String(Boolean(model.manualSeriesOpen))}"${model.saving ? ' disabled' : ''}>${t('episodes.createSeries')}</button>
+        <button class="button" type="button" data-action="toggle-episode-recommendations" aria-expanded="${String(recommendationsOpen)}" aria-controls="episodeRecommendations">${t(recommendationsOpen ? 'episodes.hideRecommendations' : 'episodes.showRecommendations')}</button>
         <button class="button primary" type="button" data-action="refresh-episode-suggestions"${model.loading || model.refreshing || model.saving ? ' disabled' : ''}>
           ${model.refreshing ? t('episodes.refreshing') : t('episodes.refresh')}
         </button>
       </div>
     </header>
     ${failures}
-    ${renderSetupProgress(stage)}
-    ${stage === 'SERIES' ? `<div class="episode-setup-step-heading"><h2>${t('episodes.seriesStepTitle')}</h2><p>${t('episodes.seriesStepDescription')}</p></div>` : ''}
-    ${stage === 'SEASONS' ? `<div class="episode-setup-step-heading"><h2>${t('episodes.seasonStepTitle')}</h2><p>${t('episodes.seasonStepDescription')}</p></div>` : ''}
-    ${manualEntry}
-    <div class="episode-review-grid" aria-label="${t('episodes.answersLabel')}" aria-busy="${String(loading || model.refreshing || model.saving)}">
-      ${content}
-    </div>
+    ${renderSeriesCatalog(model)}
+    ${renderManualSeriesForm(model)}
+    ${renderManualEpisodeForm(model)}
+    ${recommendations}
     ${renderManualPublicationPicker(model)}
   </section>`;
 }

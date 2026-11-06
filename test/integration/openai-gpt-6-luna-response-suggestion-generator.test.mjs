@@ -64,7 +64,7 @@ test('OpenAI GPT-6 Luna uses Responses API structured output and returns model p
 
   const result = await generator.generate(input);
 
-  assert.deepEqual(result, { ...output, language: 'en', provider: 'OPENAI', model: 'gpt-6-luna' });
+  assert.deepEqual(result, { ...output, language: 'en', provider: 'OPENAI', model: 'gpt-6-luna', promptVersion: 'openai-response-v1' });
   assert.equal(requests[0].url.toString(), 'https://api.openai.com/v1/responses');
   assert.equal(new Headers(requests[0].init.headers).get('authorization'), 'Bearer openai-test-secret');
   const body = JSON.parse(requests[0].init.body);

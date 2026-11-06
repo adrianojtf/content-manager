@@ -682,7 +682,7 @@ function renderCommentLikeButton(comment, model) {
   </button>`;
 }
 
-function renderBulkReplyRow(row, model) {
+export function renderBulkReplyRow(row, model) {
   const comment = row.comment;
   const author = comment.authorDisplayName?.trim() || commentAuthorFallback(comment);
   const initials = author.split(/[\s._-]+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || '?';

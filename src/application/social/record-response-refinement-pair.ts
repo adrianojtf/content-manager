@@ -50,6 +50,9 @@ export class RecordResponseRefinementPair {
       finalText,
       aiProvider: suggestion.provider,
       aiModel: suggestion.model,
+      promptVersion: typeof root.payload.promptVersion === 'string' && root.payload.promptVersion.trim()
+        ? root.payload.promptVersion
+        : 'UNKNOWN',
       aiConfidence: suggestion.confidence,
       aiRationale: suggestion.rationale,
       intendedTone: suggestion.intendedTone,

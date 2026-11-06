@@ -4,7 +4,11 @@ import {
   CreateAnalyticsEpisode,
   CreateAnalyticsSeries,
   CreateManualAnalyticsEpisode,
+  GetAnalyticsDashboard,
+  ListAnalyticsEpisodesBySeries,
   ListAvailableEpisodePublications,
+  UpdateAnalyticsEpisode,
+  UpdateAnalyticsEpisodePublication,
   UpdateAnalyticsEpisodeEconomics,
   UpsertAnalyticsFollowerSnapshot,
   UpsertAnalyticsMonthlyRevenue,
@@ -26,6 +30,8 @@ const episodeKeys = ['seriesId', 'seasonNumber', 'episodeNumber', 'episodeCode',
 const manualEpisodeKeys = [...episodeKeys, 'publicationSelections'] as const;
 const manualPublicationSelectionKeys = ['socialAccountId', 'externalPublicationId'] as const;
 const economicsKeys = ['productionCost', 'productionTimeSeconds'] as const;
+const publicationLinkKeys = ['socialAccountId', 'externalPublicationId', 'next', 'moveTo'] as const;
+const moveToKeys = ['seasonNumber', 'episodeNumber'] as const;
 const observationKeys = [
   'episodeId',
   'socialAccountId',
@@ -46,12 +52,21 @@ export class AnalyticsEntryController {
     private readonly createSeries: CreateAnalyticsSeries,
     private readonly createEpisode: CreateAnalyticsEpisode,
     private readonly createManualEpisode: CreateManualAnalyticsEpisode,
+    private readonly listSeriesEpisodes: ListAnalyticsEpisodesBySeries,
     private readonly listAvailableEpisodePublications: ListAvailableEpisodePublications,
+    private readonly updateEpisode: UpdateAnalyticsEpisode,
+    private readonly updateEpisodePublication: UpdateAnalyticsEpisodePublication,
     private readonly updateEconomics: UpdateAnalyticsEpisodeEconomics,
     private readonly upsertObservation: UpsertAnalyticsPerformanceObservation,
     private readonly upsertSnapshot: UpsertAnalyticsFollowerSnapshot,
     private readonly upsertRevenue: UpsertAnalyticsMonthlyRevenue,
+    private readonly getDashboard: GetAnalyticsDashboard,
   ) {}
+
+  @Get('dashboard')
+  async getAnalyticsDashboard() {
+    return this.getDashboard.execute();
+  }
 
   @Post('series')
   async createAnalyticsSeries(@Body() body: unknown) {
@@ -72,13 +87,22 @@ export class AnalyticsEntryController {
     }
   }
 
+  @Get('series/:seriesId/episodes')
+  async listAnalyticsSeriesEpisodes(@Param('seriesId') seriesId: string) {
+    try {
+      return await this.listSeriesEpisodes.execute(seriesId);
+    } catch (error) {
+      this.throwHttpError(error);
+    }
+  }
+
   @Post('episodes')
   async createAnalyticsEpisode(@Body() body: unknown) {
     if (!hasOnlyKeys(body, episodeKeys)
       || typeof body.seriesId !== 'string'
       || !(body.seasonNumber === null || typeof body.seasonNumber === 'number')
       || typeof body.episodeNumber !== 'number'
-      || typeof body.episodeCode !== 'string'
+      || (body.episodeCode !== undefined && typeof body.episodeCode !== 'string')
       || !isNullableMoney(body.productionCost)
       || !isNullableInteger(body.productionTimeSeconds)) {
       this.throwInvalid();
@@ -88,7 +112,7 @@ export class AnalyticsEntryController {
         seriesId: body.seriesId,
         seasonNumber: body.seasonNumber,
         episodeNumber: body.episodeNumber,
-        episodeCode: body.episodeCode,
+        episodeCode: typeof body.episodeCode === 'string' ? body.episodeCode : undefined,
         productionCost: (body.productionCost ?? null) as AnalyticsMoneyAmount | null,
         productionTimeSeconds: (body.productionTimeSeconds ?? null) as number | null,
       } satisfies CreateAnalyticsEpisodeInput);
@@ -115,7 +139,7 @@ export class AnalyticsEntryController {
       || typeof body.seriesId !== 'string'
       || !(body.seasonNumber === null || typeof body.seasonNumber === 'number')
       || typeof body.episodeNumber !== 'number'
-      || typeof body.episodeCode !== 'string'
+      || (body.episodeCode !== undefined && typeof body.episodeCode !== 'string')
       || !isNullableMoney(body.productionCost)
       || !isNullableInteger(body.productionTimeSeconds)
       || !Array.isArray(body.publicationSelections)
@@ -131,10 +155,71 @@ export class AnalyticsEntryController {
         seriesId: body.seriesId,
         seasonNumber: body.seasonNumber,
         episodeNumber: body.episodeNumber,
-        episodeCode: body.episodeCode,
+        episodeCode: typeof body.episodeCode === 'string' ? body.episodeCode : undefined,
         productionCost: (body.productionCost ?? null) as AnalyticsMoneyAmount | null,
         productionTimeSeconds: (body.productionTimeSeconds ?? null) as number | null,
         publicationSelections: body.publicationSelections as CreateManualAnalyticsEpisodeInput['publicationSelections'],
+      });
+    } catch (error) {
+      this.throwHttpError(error);
+    }
+  }
+
+  @Put('episodes/:episodeId')
+  async updateAnalyticsEpisodeEntry(
+    @Param('episodeId') episodeId: string,
+    @Body() body: unknown,
+  ) {
+    if (!hasOnlyKeys(body, episodeKeys)
+      || typeof body.seriesId !== 'string'
+      || !(body.seasonNumber === null || typeof body.seasonNumber === 'number')
+      || typeof body.episodeNumber !== 'number'
+      || (body.episodeCode !== undefined && typeof body.episodeCode !== 'string')
+      || !isNullableMoney(body.productionCost)
+      || !isNullableInteger(body.productionTimeSeconds)) {
+      this.throwInvalid();
+    }
+    try {
+      return await this.updateEpisode.execute({
+        episodeId,
+        seriesId: body.seriesId,
+        seasonNumber: body.seasonNumber,
+        episodeNumber: body.episodeNumber,
+        episodeCode: typeof body.episodeCode === 'string' ? body.episodeCode : undefined,
+        productionCost: (body.productionCost ?? null) as AnalyticsMoneyAmount | null,
+        productionTimeSeconds: (body.productionTimeSeconds ?? null) as number | null,
+      });
+    } catch (error) {
+      this.throwHttpError(error);
+    }
+  }
+
+  @Put('episodes/:episodeId/publications')
+  async updateEpisodePublicationLink(
+    @Param('episodeId') episodeId: string,
+    @Body() body: unknown,
+  ) {
+    if (!hasOnlyKeys(body, publicationLinkKeys)
+      || typeof body.socialAccountId !== 'string'
+      || typeof body.externalPublicationId !== 'string'
+      || (('next' in body) === ('moveTo' in body))
+      || ('next' in body && !(body.next === null
+        || (hasOnlyKeys(body.next, manualPublicationSelectionKeys)
+          && typeof body.next.socialAccountId === 'string'
+          && typeof body.next.externalPublicationId === 'string')))
+      || ('moveTo' in body && !(hasOnlyKeys(body.moveTo, moveToKeys)
+        && (body.moveTo.seasonNumber === null || typeof body.moveTo.seasonNumber === 'number')
+        && typeof body.moveTo.episodeNumber === 'number'))) {
+      this.throwInvalid();
+    }
+    try {
+      return await this.updateEpisodePublication.execute({
+        episodeId,
+        socialAccountId: body.socialAccountId,
+        externalPublicationId: body.externalPublicationId,
+        ...(('next' in body)
+          ? { next: body.next as { socialAccountId: string; externalPublicationId: string } | null }
+          : { moveTo: body.moveTo as { seasonNumber: number | null; episodeNumber: number } }),
       });
     } catch (error) {
       this.throwHttpError(error);
@@ -253,6 +338,7 @@ export class AnalyticsEntryController {
       ANALYTICS_ENTRY_EPISODE_NOT_FOUND: HttpStatus.NOT_FOUND,
       ANALYTICS_ENTRY_ACCOUNT_NOT_FOUND: HttpStatus.NOT_FOUND,
       ANALYTICS_ENTRY_PUBLICATION_NOT_LINKED: HttpStatus.NOT_FOUND,
+      ANALYTICS_ENTRY_PUBLICATION_NOT_FOUND: HttpStatus.NOT_FOUND,
       ANALYTICS_ENTRY_PUBLICATION_ALREADY_LINKED: HttpStatus.CONFLICT,
       ANALYTICS_ENTRY_PLATFORM_UNSUPPORTED: HttpStatus.BAD_REQUEST,
       ANALYTICS_ENTRY_SERIES_CONFLICT: HttpStatus.CONFLICT,
@@ -270,6 +356,7 @@ function isAnalyticsEntryErrorCode(value: string): value is AnalyticsEntryErrorC
     || value === 'ANALYTICS_ENTRY_EPISODE_NOT_FOUND'
     || value === 'ANALYTICS_ENTRY_ACCOUNT_NOT_FOUND'
     || value === 'ANALYTICS_ENTRY_PUBLICATION_NOT_LINKED'
+    || value === 'ANALYTICS_ENTRY_PUBLICATION_NOT_FOUND'
     || value === 'ANALYTICS_ENTRY_PUBLICATION_ALREADY_LINKED'
     || value === 'ANALYTICS_ENTRY_PLATFORM_UNSUPPORTED'
     || value === 'ANALYTICS_ENTRY_SERIES_CONFLICT'

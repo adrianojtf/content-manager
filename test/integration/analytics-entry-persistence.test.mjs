@@ -66,6 +66,143 @@ async function linkPublication(pool, tenantId, episodeId, accountId, platform, e
   );
 }
 
+test('Series episode listing returns every episode in stable order and never crosses tenant boundaries', async () => {
+  const { pool, repository } = await createRepository();
+  try {
+    const series = await repository.createSeries(tenantOne, entryInput({
+      name: 'FQA',
+      aliases: [],
+      seasonMode: 'SEASONAL',
+    }));
+    const otherTenantSeries = await repository.createSeries(tenantTwo, entryInput({
+      name: 'Other',
+      aliases: [],
+      seasonMode: 'NON_SEASONAL',
+    }));
+    const laterEpisode = await repository.createEpisode(tenantOne, entryInput({
+      seriesId: series.id,
+      seasonNumber: 2,
+      episodeNumber: 10,
+      episodeCode: 'FQA-S02-E10',
+      productionCost: null,
+      productionTimeSeconds: null,
+    }));
+    await repository.createEpisode(tenantOne, entryInput({
+      seriesId: series.id,
+      seasonNumber: 1,
+      episodeNumber: 2,
+      episodeCode: 'FQA-S01-E02',
+      productionCost: null,
+      productionTimeSeconds: null,
+    }));
+    await repository.createEpisode(tenantTwo, entryInput({
+      seriesId: otherTenantSeries.id,
+      seasonNumber: null,
+      episodeNumber: 1,
+      episodeCode: 'OTHER-E01',
+      productionCost: null,
+      productionTimeSeconds: null,
+    }));
+    await linkPublication(pool, tenantOne, laterEpisode.id, accountOne, 'instagram', 'external-1');
+
+    const episodes = await repository.listEpisodesBySeries(tenantOne, series.id);
+    assert.deepEqual(episodes.map(({ episodeCode }) => episodeCode), ['FQA-S01-E02', 'FQA-S02-E10']);
+    assert.deepEqual(episodes[1].publications, [{
+      platform: 'instagram',
+      socialAccountId: accountOne,
+      socialAccountName: 'Creator',
+      externalPublicationId: 'external-1',
+      title: 'FQA-E08',
+      description: 'Episode',
+      permalink: null,
+      thumbnailUrl: null,
+      publishedAt: '2026-10-10T12:00:00.000Z',
+    }]);
+    assert.deepEqual(await repository.listEpisodesBySeries(tenantTwo, series.id), []);
+  } finally {
+    await pool.end();
+  }
+});
+
+test('Dashboard read model includes tenant-owned series, linked posts, observations, audience snapshots and revenue', async () => {
+  const { pool, repository } = await createRepository();
+  try {
+    const series = await repository.createSeries(tenantOne, entryInput({
+      name: 'FQA',
+      aliases: [],
+      seasonMode: 'SEASONAL',
+    }));
+    const episode = await repository.createEpisode(tenantOne, entryInput({
+      seriesId: series.id,
+      seasonNumber: 2,
+      episodeNumber: 8,
+      episodeCode: 'FQA-S02-E08',
+      productionCost: { amount: '1200.50', currency: 'BRL' },
+      productionTimeSeconds: 3600,
+    }));
+    await linkPublication(pool, tenantOne, episode.id, accountOne, 'instagram', 'external-1');
+    await repository.savePerformanceObservation(tenantOne, {
+      episodeId: episode.id,
+      socialAccountId: accountOne,
+      externalPublicationId: 'external-1',
+      observedAt: '2026-10-14T12:00:00.000Z',
+      publishedAt: '2026-10-10T12:00:00.000Z',
+      durationSeconds: 60,
+      metrics: {
+        views: 500, likes: 40, comments: 5, shares: 3, saves: 2, reach: null,
+        followersGained: 10, profileVisits: null, averageWatchTimeSeconds: null, retentionPercent: null,
+      },
+      metricDefinitions: null,
+      actorId: 'LOCAL_PILOT_CREATOR',
+      at: '2026-10-14T12:00:00.000Z',
+    });
+    await repository.saveAccountFollowerSnapshot(tenantOne, {
+      socialAccountId: accountOne,
+      observedAt: '2026-10-14T12:00:00.000Z',
+      totalFollowers: 15000,
+      actorId: 'LOCAL_PILOT_CREATOR',
+      at: '2026-10-14T12:00:00.000Z',
+    });
+    await repository.saveMonthlyPlatformRevenue(tenantOne, {
+      platform: 'instagram',
+      month: '2026-10-01',
+      amount: { amount: '3050.75', currency: 'BRL' },
+      actorId: 'LOCAL_PILOT_CREATOR',
+      at: '2026-10-14T12:00:00.000Z',
+    });
+
+    const dashboardData = await repository.getDashboardData(tenantOne);
+
+    assert.deepEqual(dashboardData.series, [{ id: series.id, name: 'FQA' }]);
+    assert.equal(dashboardData.episodes.length, 1);
+    assert.equal(dashboardData.episodes[0].episodeCode, 'FQA-S02-E08');
+    assert.deepEqual(dashboardData.episodes[0].publications, [{
+      socialAccountId: accountOne,
+      externalPublicationId: 'external-1',
+      platform: 'instagram',
+      publishedAt: '2026-10-10T12:00:00.000Z',
+    }]);
+    assert.equal(dashboardData.observations[0].metrics.views, 500);
+    assert.deepEqual(dashboardData.socialAccountIds, [accountOne, accountTwo]);
+    assert.equal(dashboardData.followerSnapshots[0].totalFollowers, 15000);
+    assert.deepEqual(dashboardData.revenue[0], {
+      platform: 'instagram',
+      month: '2026-10-01',
+      amount: { amount: '3050.75', currency: 'BRL' },
+    });
+    assert.deepEqual(await repository.getDashboardData(tenantTwo), {
+      series: [],
+      episodes: [],
+      observations: [],
+      socialAccountIds: [accountThree],
+      followerSnapshots: [],
+      revenue: [],
+    });
+  } finally {
+    await pool.end();
+  }
+});
+
 function entryInput(overrides = {}) {
   return {
     actorId: 'LOCAL_PILOT_CREATOR',
@@ -243,6 +380,261 @@ test('non-seasonal series store one null-season episode identity', async () => {
     await assert.rejects(
       repository.createEpisode(tenantOne, entryInput({ seriesId: series.id, seasonNumber: null, episodeNumber: 12, episodeCode: 'DV-E12-B', productionCost: null, productionTimeSeconds: null })),
       (error) => error.code === 'ANALYTICS_ENTRY_EPISODE_CONFLICT',
+    );
+  } finally {
+    await pool.end();
+  }
+});
+
+test('episode updates correct identity and economics, exclude the own record, and preserve links', async () => {
+  const { pool, repository } = await createRepository();
+  try {
+    const series = await repository.createSeries(tenantOne, entryInput({ name: 'FQA', aliases: [], seasonMode: 'SEASONAL' }));
+    const first = await repository.createEpisode(tenantOne, entryInput({
+      seriesId: series.id, seasonNumber: 1, episodeNumber: 1, episodeCode: 'FQA-S01-E01',
+      productionCost: null, productionTimeSeconds: null,
+    }));
+    const second = await repository.createEpisode(tenantOne, entryInput({
+      seriesId: series.id, seasonNumber: 1, episodeNumber: 2, episodeCode: 'FQA-S01-E02',
+      productionCost: null, productionTimeSeconds: null,
+    }));
+    await linkPublication(pool, tenantOne, second.id, accountOne, 'instagram', 'external-1');
+
+    const updated = await repository.updateEpisode(tenantOne, {
+      episodeId: second.id,
+      seriesId: series.id,
+      seasonNumber: 2,
+      episodeNumber: 5,
+      episodeCode: 'FQA-S02-E05',
+      productionCost: { amount: '750.25', currency: 'BRL' },
+      productionTimeSeconds: 4200,
+      actorId: 'LOCAL_PILOT_CREATOR',
+      at: '2026-10-16T12:00:00.000Z',
+    });
+    assert.equal(updated.episodeCode, 'FQA-S02-E05');
+    assert.equal(updated.seasonNumber, 2);
+    assert.deepEqual(updated.productionCost, { amount: '750.25', currency: 'BRL' });
+
+    const episodes = await repository.listEpisodesBySeries(tenantOne, series.id);
+    const corrected = episodes.find((episode) => episode.id === second.id);
+    assert.equal(corrected.episodeNumber, 5);
+    assert.equal(corrected.publications.length, 1, 'publication link is preserved after the correction');
+
+    await assert.rejects(
+      repository.updateEpisode(tenantOne, entryInput({
+        episodeId: second.id, seriesId: series.id, seasonNumber: 1, episodeNumber: 1,
+        episodeCode: 'FQA-S02-E05', productionCost: null, productionTimeSeconds: null,
+      })),
+      (error) => error.code === 'ANALYTICS_ENTRY_EPISODE_CONFLICT',
+    );
+    await assert.rejects(
+      repository.updateEpisode(tenantOne, entryInput({
+        episodeId: second.id, seriesId: series.id, seasonNumber: 2, episodeNumber: 5,
+        episodeCode: 'FQA-S01-E01', productionCost: null, productionTimeSeconds: null,
+      })),
+      (error) => error.code === 'ANALYTICS_ENTRY_CODE_CONFLICT',
+    );
+    await assert.rejects(
+      repository.updateEpisode(tenantTwo, entryInput({
+        episodeId: second.id, seriesId: series.id, seasonNumber: 2, episodeNumber: 5,
+        episodeCode: 'FQA-S02-E05', productionCost: null, productionTimeSeconds: null,
+      })),
+      (error) => error.code === 'ANALYTICS_ENTRY_EPISODE_NOT_FOUND',
+    );
+    assert.equal(first.episodeCode, 'FQA-S01-E01');
+  } finally {
+    await pool.end();
+  }
+});
+
+test('episode publication links can be replaced or removed per source while keeping the episode and its history', async () => {
+  const { pool, repository } = await createRepository();
+  try {
+    const series = await repository.createSeries(tenantOne, entryInput({ name: 'FQA', aliases: [], seasonMode: 'SEASONAL' }));
+    const episode = await repository.createEpisode(tenantOne, entryInput({
+      seriesId: series.id, seasonNumber: 1, episodeNumber: 1, episodeCode: 'FQA-S01-E01',
+      productionCost: null, productionTimeSeconds: null,
+    }));
+    await linkPublication(pool, tenantOne, episode.id, accountOne, 'instagram', 'external-1');
+    await repository.savePerformanceObservation(tenantOne, {
+      episodeId: episode.id,
+      socialAccountId: accountOne,
+      externalPublicationId: 'external-1',
+      observedAt: '2026-10-14T12:00:00.000Z',
+      publishedAt: '2026-10-10T12:00:00.000Z',
+      durationSeconds: 60,
+      metrics: {
+        views: 500, likes: null, comments: null, shares: null, saves: null, reach: null,
+        followersGained: null, profileVisits: null, averageWatchTimeSeconds: null, retentionPercent: null,
+      },
+      metricDefinitions: null,
+      actorId: 'LOCAL_PILOT_CREATOR',
+      at: '2026-10-14T12:00:00.000Z',
+    });
+
+    const replaced = await repository.replaceEpisodePublicationLink(tenantOne, {
+      episodeId: episode.id,
+      socialAccountId: accountOne,
+      externalPublicationId: 'external-1',
+      next: { socialAccountId: accountOne, externalPublicationId: 'external-2' },
+      actorId: 'LOCAL_PILOT_CREATOR',
+      at: '2026-10-16T12:00:00.000Z',
+    });
+    assert.equal(replaced.replaced, true);
+
+    const episodes = await repository.listEpisodesBySeries(tenantOne, series.id);
+    assert.deepEqual(episodes[0].publications.map((publication) => publication.externalPublicationId), ['external-2']);
+    const { rows: observations } = await pool.query(
+      'SELECT external_publication_id, views FROM analytics_performance_observations WHERE tenant_id = $1',
+      [tenantOne],
+    );
+    assert.deepEqual(observations, [{ external_publication_id: 'external-2', views: 500 }], 'observation follows the corrected source identity');
+    const unlinked = await repository.listUnlinkedPublications(tenantOne, 'instagram');
+    assert.deepEqual(unlinked.map((publication) => publication.externalPublicationId), ['external-1']);
+
+    const removed = await repository.replaceEpisodePublicationLink(tenantOne, {
+      episodeId: episode.id,
+      socialAccountId: accountOne,
+      externalPublicationId: 'external-2',
+      next: null,
+      actorId: 'LOCAL_PILOT_CREATOR',
+      at: '2026-10-16T12:30:00.000Z',
+    });
+    assert.equal(removed.replaced, false);
+    const afterRemove = await repository.listEpisodesBySeries(tenantOne, series.id);
+    assert.equal(afterRemove[0].publications.length, 0);
+    const { rows: remainingObservations } = await pool.query(
+      'SELECT id FROM analytics_performance_observations WHERE tenant_id = $1',
+      [tenantOne],
+    );
+    assert.equal(remainingObservations.length, 0, 'unlinking removes observations of that source');
+
+    await assert.rejects(
+      repository.replaceEpisodePublicationLink(tenantOne, entryInput({
+        episodeId: episode.id, socialAccountId: accountOne, externalPublicationId: 'external-2', next: null,
+      })),
+      (error) => error.code === 'ANALYTICS_ENTRY_PUBLICATION_NOT_LINKED',
+    );
+    await assert.rejects(
+      repository.replaceEpisodePublicationLink(tenantOne, entryInput({
+        episodeId: episode.id, socialAccountId: accountOne, externalPublicationId: 'missing', next: null,
+      })),
+      (error) => error.code === 'ANALYTICS_ENTRY_PUBLICATION_NOT_LINKED',
+    );
+    await assert.rejects(
+      repository.replaceEpisodePublicationLink(tenantTwo, entryInput({
+        episodeId: episode.id, socialAccountId: accountOne, externalPublicationId: 'external-1', next: null,
+      })),
+      (error) => error.code === 'ANALYTICS_ENTRY_EPISODE_NOT_FOUND',
+    );
+  } finally {
+    await pool.end();
+  }
+});
+
+test('episode publication link can be moved to another episode number in the same series with its observations', async () => {
+  const { pool, repository } = await createRepository();
+  try {
+    const series = await repository.createSeries(tenantOne, entryInput({ name: 'FQA', aliases: [], seasonMode: 'SEASONAL' }));
+    const sixth = await repository.createEpisode(tenantOne, entryInput({
+      seriesId: series.id, seasonNumber: 1, episodeNumber: 6, episodeCode: 'FQA-S01-E06',
+      productionCost: null, productionTimeSeconds: null,
+    }));
+    const seventh = await repository.createEpisode(tenantOne, entryInput({
+      seriesId: series.id, seasonNumber: 1, episodeNumber: 7, episodeCode: 'FQA-S01-E07',
+      productionCost: null, productionTimeSeconds: null,
+    }));
+    await linkPublication(pool, tenantOne, sixth.id, accountOne, 'instagram', 'external-1');
+    await repository.savePerformanceObservation(tenantOne, {
+      episodeId: sixth.id,
+      socialAccountId: accountOne,
+      externalPublicationId: 'external-1',
+      observedAt: '2026-10-14T12:00:00.000Z',
+      publishedAt: '2026-10-10T12:00:00.000Z',
+      durationSeconds: 60,
+      metrics: {
+        views: 500, likes: null, comments: null, shares: null, saves: null, reach: null,
+        followersGained: null, profileVisits: null, averageWatchTimeSeconds: null, retentionPercent: null,
+      },
+      metricDefinitions: null,
+      actorId: 'LOCAL_PILOT_CREATOR',
+      at: '2026-10-14T12:00:00.000Z',
+    });
+
+    const moved = await repository.moveEpisodePublicationLink(tenantOne, {
+      episodeId: sixth.id,
+      socialAccountId: accountOne,
+      externalPublicationId: 'external-1',
+      target: { seasonNumber: 1, episodeNumber: 7 },
+      actorId: 'LOCAL_PILOT_CREATOR',
+      at: '2026-10-16T12:00:00.000Z',
+    });
+    assert.equal(moved.moved, true);
+
+    const episodes = await repository.listEpisodesBySeries(tenantOne, series.id);
+    const sixthAfter = episodes.find((episode) => episode.id === sixth.id);
+    const seventhAfter = episodes.find((episode) => episode.id === seventh.id);
+    assert.equal(sixthAfter.publications.length, 0);
+    assert.deepEqual(seventhAfter.publications.map((publication) => publication.externalPublicationId), ['external-1']);
+    const { rows: observations } = await pool.query(
+      'SELECT episode_id FROM analytics_performance_observations WHERE tenant_id = $1',
+      [tenantOne],
+    );
+    assert.deepEqual(observations, [{ episode_id: seventh.id }], 'observation follows the link to the corrected episode');
+
+    await assert.rejects(
+      repository.moveEpisodePublicationLink(tenantOne, entryInput({
+        episodeId: seventh.id, socialAccountId: accountOne, externalPublicationId: 'external-1',
+        target: { seasonNumber: 1, episodeNumber: 99 },
+      })),
+      (error) => error.code === 'ANALYTICS_ENTRY_EPISODE_NOT_FOUND',
+    );
+    await assert.rejects(
+      repository.moveEpisodePublicationLink(tenantOne, entryInput({
+        episodeId: sixth.id, socialAccountId: accountOne, externalPublicationId: 'external-1',
+        target: { seasonNumber: 1, episodeNumber: 7 },
+      })),
+      (error) => error.code === 'ANALYTICS_ENTRY_PUBLICATION_NOT_LINKED',
+    );
+    await assert.rejects(
+      repository.moveEpisodePublicationLink(tenantTwo, entryInput({
+        episodeId: seventh.id, socialAccountId: accountOne, externalPublicationId: 'external-1',
+        target: { seasonNumber: 1, episodeNumber: 7 },
+      })),
+      (error) => error.code === 'ANALYTICS_ENTRY_EPISODE_NOT_FOUND',
+    );
+  } finally {
+    await pool.end();
+  }
+});
+
+test('episode publication link replacement rejects cross-platform swaps, already-linked and unknown targets', async () => {
+  const { pool, repository } = await createRepository();
+  try {
+    const series = await repository.createSeries(tenantOne, entryInput({ name: 'FQA', aliases: [], seasonMode: 'SEASONAL' }));
+    const first = await repository.createEpisode(tenantOne, entryInput({
+      seriesId: series.id, seasonNumber: 1, episodeNumber: 1, episodeCode: 'FQA-S01-E01',
+      productionCost: null, productionTimeSeconds: null,
+    }));
+    const second = await repository.createEpisode(tenantOne, entryInput({
+      seriesId: series.id, seasonNumber: 1, episodeNumber: 2, episodeCode: 'FQA-S01-E02',
+      productionCost: null, productionTimeSeconds: null,
+    }));
+    await linkPublication(pool, tenantOne, first.id, accountOne, 'instagram', 'external-1');
+    await linkPublication(pool, tenantOne, second.id, accountOne, 'instagram', 'external-2');
+    const base = { episodeId: first.id, socialAccountId: accountOne, externalPublicationId: 'external-1', actorId: 'LOCAL_PILOT_CREATOR', at: '2026-10-16T12:00:00.000Z' };
+
+    await assert.rejects(
+      repository.replaceEpisodePublicationLink(tenantOne, { ...base, next: { socialAccountId: accountTwo, externalPublicationId: 'yt-1' } }),
+      (error) => error.code === 'ANALYTICS_ENTRY_PLATFORM_UNSUPPORTED',
+    );
+    await assert.rejects(
+      repository.replaceEpisodePublicationLink(tenantOne, { ...base, next: { socialAccountId: accountOne, externalPublicationId: 'external-2' } }),
+      (error) => error.code === 'ANALYTICS_ENTRY_PUBLICATION_ALREADY_LINKED',
+    );
+    await assert.rejects(
+      repository.replaceEpisodePublicationLink(tenantOne, { ...base, next: { socialAccountId: accountOne, externalPublicationId: 'unknown-post' } }),
+      (error) => error.code === 'ANALYTICS_ENTRY_PUBLICATION_NOT_FOUND',
     );
   } finally {
     await pool.end();

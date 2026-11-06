@@ -1,6 +1,7 @@
 import type { SocialAccountId } from '../../domain/social/social-account-id';
 import type { EpisodeReviewSeasonMode, EpisodeReviewSeries } from './episode-review.repository.port';
 import type { SocialPlatform } from '../../domain/social/social-account';
+import type { AnalyticsDashboardSourceData } from '../../domain/analytics/dashboard-report';
 
 export type AnalyticsPerformancePlatform = 'instagram' | 'facebook' | 'tiktok';
 export type AnalyticsRevenuePlatform = AnalyticsPerformancePlatform;
@@ -18,6 +19,22 @@ export interface AnalyticsEpisodeRecord {
   readonly episodeCode: string;
   readonly productionCost: AnalyticsMoneyAmount | null;
   readonly productionTimeSeconds: number | null;
+}
+
+export interface AnalyticsSeriesEpisodePublication {
+  readonly platform: SocialPlatform;
+  readonly socialAccountId: SocialAccountId;
+  readonly socialAccountName: string | null;
+  readonly externalPublicationId: string;
+  readonly title: string | null;
+  readonly description: string | null;
+  readonly permalink: string | null;
+  readonly thumbnailUrl: string | null;
+  readonly publishedAt: string | null;
+}
+
+export interface AnalyticsSeriesEpisodeDetails extends AnalyticsEpisodeRecord {
+  readonly publications: readonly AnalyticsSeriesEpisodePublication[];
 }
 
 export interface AvailableEpisodePublication {
@@ -101,6 +118,10 @@ export interface MonthlyPlatformRevenueRecord {
 }
 
 export interface AnalyticsEntryRepository {
+  getDashboardData(tenantId: string): Promise<AnalyticsDashboardSourceData>;
+
+  listEpisodesBySeries(tenantId: string, seriesId: string): Promise<readonly AnalyticsSeriesEpisodeDetails[]>;
+
   listUnlinkedPublications(tenantId: string, platform: SocialPlatform): Promise<readonly AvailableEpisodePublication[]>;
 
   createSeries(
@@ -134,6 +155,45 @@ export interface AnalyticsEntryRepository {
   ): Promise<ManualEpisodeCreationResult>;
 
   findEpisodeById(tenantId: string, episodeId: string): Promise<AnalyticsEpisodeRecord | null>;
+
+  updateEpisode(
+    tenantId: string,
+    input: {
+      readonly episodeId: string;
+      readonly seriesId: string;
+      readonly seasonNumber: number | null;
+      readonly episodeNumber: number;
+      readonly episodeCode: string;
+      readonly productionCost: AnalyticsMoneyAmount | null;
+      readonly productionTimeSeconds: number | null;
+      readonly actorId: string;
+      readonly at: string;
+    },
+  ): Promise<AnalyticsEpisodeRecord>;
+
+  replaceEpisodePublicationLink(
+    tenantId: string,
+    input: {
+      readonly episodeId: string;
+      readonly socialAccountId: SocialAccountId;
+      readonly externalPublicationId: string;
+      readonly next: ManualEpisodePublicationSelection | null;
+      readonly actorId: string;
+      readonly at: string;
+    },
+  ): Promise<{ readonly replaced: boolean }>;
+
+  moveEpisodePublicationLink(
+    tenantId: string,
+    input: {
+      readonly episodeId: string;
+      readonly socialAccountId: SocialAccountId;
+      readonly externalPublicationId: string;
+      readonly target: { readonly seasonNumber: number | null; readonly episodeNumber: number };
+      readonly actorId: string;
+      readonly at: string;
+    },
+  ): Promise<{ readonly moved: boolean }>;
 
   updateEpisodeEconomics(
     tenantId: string,
